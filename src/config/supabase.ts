@@ -38,7 +38,7 @@ export const supabase = createSupabaseClient();
 export const PRODUCT_IMAGES_BUCKET = 'productos';
 
 /**
- * Verifica la conexión con Supabase al arrancar (equivalente al antiguo initializeFirebase).
+ * Verifica la conexión con Supabase al arrancar.
  */
 export const initializeSupabase = async (): Promise<boolean> => {
     if (!supabase) return false;

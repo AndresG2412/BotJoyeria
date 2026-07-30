@@ -4,7 +4,7 @@ import { logger } from '../utils/logger';
 // ─────────────────────────────────────────────────────────────────────────────
 //  Catálogo sobre Supabase (Postgres)
 //  Tablas: categorias, productos
-//  (La versión anterior en Firestore quedó archivada en legacy/firebase/catalog.firestore.ts)
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Normaliza texto para comparaciones tolerantes a acentos, mayúsculas y espacios. */

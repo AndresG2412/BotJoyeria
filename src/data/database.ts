@@ -4,7 +4,7 @@ import { logger } from '../utils/logger';
 // ─────────────────────────────────────────────────────────────────────────────
 //  Sesiones de chat y citas sobre Supabase (Postgres)
 //  Tablas: sessions, appointments
-//  (La versión anterior en Firestore quedó archivada en legacy/firebase/database.firestore.ts)
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getSession = async (sessionId: string) => {
@@ -170,7 +170,7 @@ export const getMemory = async (sessionId: string): Promise<any[]> => {
 export const saveMemory = async (sessionId: string, storeId: string, senderPhone: string, messages: any[]) => {
     if (!supabase) return true;
     try {
-        // Sanitizar array (mismo motivo por el que se hacía en Firebase: solo JSON puro)
+        // Sanitizar array: solo JSON puro
         const cleanMessages = JSON.parse(JSON.stringify(messages));
         const { error } = await supabase
             .from('sessions')

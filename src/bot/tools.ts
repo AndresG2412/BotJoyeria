@@ -497,7 +497,7 @@ export async function executeTool(
                 try {
                     const keyFilePath = process.env.GOOGLE_SERVICE_ACCOUNT_PATH
                         ? path.resolve(process.cwd(), process.env.GOOGLE_SERVICE_ACCOUNT_PATH)
-                        : path.resolve(process.cwd(), 'firebase-key.json');
+                        : path.resolve(process.cwd(), 'google-service-account.json');
                     const auth = new google.auth.GoogleAuth({
                         keyFile: keyFilePath,
                         scopes: ['https://www.googleapis.com/auth/calendar'],

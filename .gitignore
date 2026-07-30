@@ -3,6 +3,7 @@ dist/
 .env
 .DS_Store
 *.log
+npm-cache/
 data/database.sqlite
 data/
 !src/data/
@@ -25,4 +26,5 @@ scratch_alter.ts
 test-models.mjs
 
 # Credentials
+google-service-account.json
 firebase-key.json

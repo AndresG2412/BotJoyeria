@@ -13,8 +13,6 @@ import { startRemarketingCron } from './bot/remarketing';
 import { dashboardRouter } from './routes/dashboard';
 import path from 'path';
 import { eq } from 'drizzle-orm';
-// LEGACY Firebase: la inicialización anterior quedó archivada en legacy/firebase/firebase.ts
-// import { initializeFirebase } from './config/firebase';
 import { initializeSupabase } from './config/supabase';
 import { db } from './data/connection';
 import { users, stores } from './data/schema';
@@ -22,8 +20,6 @@ import { users, stores } from './data/schema';
 function bootstrap() {
     logger.info(`Iniciando AI Bot para Ecommerce: ${config.STORE_NAME}`);
 
-    // Iniciar conexión con Supabase (antes Firebase)
-    // initializeFirebase();
     initializeSupabase();
 
     const app = express();
