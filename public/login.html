@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login | E-Commerce Bot</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        :root {
+            --bg: #0B0F19;
+            --panel: #151C2C;
+            --panel2: #1E293B;
+            --border: #2A3441;
+            --brand: #10b981;
+            --brand-dark: #059669;
+            --brand-glow: rgba(16, 185, 129, 0.15);
+            --text: #F8FAFC;
+            --text2: #94A3B8;
+            --text3: #64748B;
+        }
+
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background: var(--bg);
+            color: var(--text); 
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        /* ───── BG DECOR ───── */
+        .bg-glow {
+            position: absolute; border-radius: 50%; filter: blur(120px); pointer-events: none; z-index: -1;
+        }
+
+        /* ───── LOGIN CARD ───── */
+        .login-card {
+            width: 100%;
+            max-width: 400px;
+            padding: 40px;
+            background: rgba(21, 28, 44, 0.75);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--border);
+            border-radius: 24px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+            animation: slideUp 0.6s ease-out;
+        }
+
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .logo {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 32px;
+        }
+        .logo-icon {
+            width: 56px; height: 56px; border-radius: 16px;
+            background: linear-gradient(135deg, var(--brand), var(--brand-dark));
+            display: flex; align-items: center; justify-content: center;
+            box-shadow: 0 8px 20px rgba(16,185,129,0.25);
+        }
+        .logo-icon i { font-size: 32px; color: #fff; }
+        .logo-text h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }
+        .logo-text span { font-size: 11px; color: var(--brand); text-transform: uppercase; letter-spacing: 2px; font-weight: 600; }
+
+        .form-group { margin-bottom: 20px; position: relative; }
+        .form-group label { display: block; font-size: 12px; font-weight: 500; color: var(--text2); margin-bottom: 8px; margin-left: 4px; }
+        
+        .input-wrapper { position: relative; }
+        .input-wrapper i { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text3); font-size: 18px; }
+        .input-wrapper input {
+            width: 100%;
+            padding: 12px 16px 12px 42px;
+            background: rgba(0,0,0,0.2);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            color: var(--text);
+            font-size: 14px;
+            outline: none;
+            transition: all 0.2s;
+            font-family: 'Inter', sans-serif;
+        }
+        .input-wrapper input:focus {
+            border-color: var(--brand);
+            background: rgba(0,0,0,0.3);
+            box-shadow: 0 0 0 4px var(--brand-glow);
+        }
+
+        .btn-login {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, var(--brand), var(--brand-dark));
+            color: #fff;
+            border: none;
+            border-radius: 12px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex; align-items: center; justify-content: center; gap: 8px;
+            margin-top: 10px;
+            box-shadow: 0 4px 14px rgba(16,185,129,0.3);
+        }
+        .btn-login:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(16,185,129,0.4); }
+        .btn-login:active { transform: translateY(0); }
+        .btn-login:disabled { opacity: 0.7; cursor: not-allowed; }
+
+        #error-msg {
+            color: #ef4444;
+            font-size: 13px;
+            text-align: center;
+            margin-top: 16px;
+            background: rgba(239, 68, 68, 0.1);
+            padding: 10px;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .footer-text {
+            text-align: center;
+            margin-top: 24px;
+            font-size: 12px;
+            color: var(--text3);
+        }
+        
+        /* Spinner */
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .spinner { animation: spin 1s linear infinite; }
+    </style>
+</head>
+<body>
+    <div class="bg-glow" style="width:500px;height:500px;background:rgba(16,185,129,0.08);top:-150px;right:-150px;"></div>
+    <div class="bg-glow" style="width:500px;height:500px;background:rgba(59,130,246,0.07);bottom:-150px;left:-150px;"></div>
+
+    <div class="login-card">
+        <div class="logo">
+            <div class="logo-icon"><i class="ph ph-robot"></i></div>
+            <div class="logo-text">
+                <h1>Bienvenido de nuevo</h1>
+                <span>ACCESO AL DASHBOARD</span>
+            </div>
+        </div>
+
+        <form id="loginForm" onsubmit="handleLogin(event)">
+            <div class="form-group">
+                <label>Usuario</label>
+                <div class="input-wrapper">
+                    <i class="ph ph-user"></i>
+                    <input type="text" id="username" placeholder="Tu usuario" required autofocus>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Contraseña</label>
+                <div class="input-wrapper">
+                    <i class="ph ph-lock"></i>
+                    <input type="password" id="password" placeholder="••••••••" required>
+                </div>
+            </div>
+            
+            <div id="error-msg">Usuario o contraseña incorrectos</div>
+
+            <button type="submit" class="btn-login" id="submitBtn">
+                Acceder al Panel <i class="ph ph-arrow-right"></i>
+            </button>
+        </form>
+
+        <p class="footer-text">Protección de seguridad activada &copy; 2026</p>
+    </div>
+
+    <script>
+        async function handleLogin(e) {
+            e.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const errorMsg = document.getElementById('error-msg');
+            const submitBtn = document.getElementById('submitBtn');
+
+            errorMsg.style.display = 'none';
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<i class="ph ph-spinner spinner"></i> Validando...';
+
+            try {
+                const res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await res.json();
+
+                if (res.ok && data.success) {
+                    window.location.href = '/dashboard';
+                } else {
+                    throw new Error(data.error || 'Credenciales incorrectas');
+                }
+            } catch (err) {
+                errorMsg.textContent = err.message;
+                errorMsg.style.display = 'block';
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = 'Acceder al Panel <i class="ph ph-arrow-right"></i>';
+            }
+        }
+    </script>
+</body>
+</html>

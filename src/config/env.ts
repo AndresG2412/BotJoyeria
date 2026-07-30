@@ -1,0 +1,40 @@
+import dotenv from 'dotenv';
+import path from 'path';
+
+// Cargar variables de entorno desde .env
+dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+
+export const config = {
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
+    OPENAI_API_KEY_2: process.env.OPENAI_API_KEY_2 || '',
+    OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || '',
+    OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    STORE_NAME: process.env.STORE_NAME || 'nuestro ecommerce',
+    PORT: process.env.PORT || 3000,
+    DASHBOARD_USER: process.env.DASHBOARD_USER || 'admin',
+    DASHBOARD_PASSWORD: process.env.DASHBOARD_PASSWORD || 'admin123',
+    META_ACCESS_TOKEN: process.env.META_ACCESS_TOKEN || '',
+    META_PHONE_ID: process.env.META_PHONE_ID || '',
+    META_VERIFY_TOKEN: process.env.META_VERIFY_TOKEN || 'mi_token_secreto_ecommerce',
+    NGROK_AUTHTOKEN: process.env.NGROK_AUTHTOKEN || '',
+    NGROK_DOMAIN: process.env.NGROK_DOMAIN || '',
+    JWT_SECRET: process.env.JWT_SECRET || 'super-secreto-ai-bot-99',
+    CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME || '',
+    CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY || '',
+    CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET || '',
+    RESEND_API_KEY: process.env.RESEND_API_KEY || '',
+    // Supabase (base de datos + Storage de imágenes)
+    SUPABASE_URL: process.env.SUPABASE_URL || '',
+    SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY || '',
+    SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
+    // Ruta al JSON de cuenta de servicio de Google (solo para Google Calendar)
+    GOOGLE_SERVICE_ACCOUNT_PATH: process.env.GOOGLE_SERVICE_ACCOUNT_PATH || '',
+};
+
+// Validación simple
+if (!config.OPENAI_API_KEY) {
+    console.warn("⚠️ ADVERTENCIA: No se ha configurado OPENAI_API_KEY en el archivo .env!");
+}
+if (!config.META_ACCESS_TOKEN) {
+    console.warn("⚠️ ADVERTENCIA: No se ha configurado META_ACCESS_TOKEN para la WhatsApp Cloud API.");
+}

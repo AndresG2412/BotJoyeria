@@ -1,0 +1,1201 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Panel de Control - Bot de Tienda</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css">
+    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
+    <style>
+        @keyframes spin { from { transform: rotate(0) } to { transform: rotate(360deg) } }
+        .uploading-preview {
+            display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;
+        }
+        .img-thumb-wrap {
+            position: relative; width: 80px; height: 80px; border-radius: 8px; overflow: hidden;
+            border: 1px solid var(--border);
+        }
+        .img-thumb-wrap img {
+            width: 100%; height: 100%; object-fit: cover; display: block;
+        }
+        .img-thumb-wrap .remove-img {
+            position: absolute; top: 3px; right: 3px; background: rgba(0,0,0,0.6);
+            border: none; border-radius: 50%; width: 20px; height: 20px; cursor: pointer;
+            color: white; font-size: 11px; display: flex; align-items: center; justify-content: center;
+        }
+        .img-thumb-wrap .upload-status {
+            position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.55);
+            font-size: 10px; color: white; text-align: center; padding: 2px 0;
+        }
+        .upload-drop-zone {
+            border: 2px dashed var(--border); border-radius: 10px;
+            padding: 20px; text-align: center; cursor: pointer;
+            transition: border-color .2s, background .2s; color: var(--text3);
+        }
+        .upload-drop-zone:hover, .upload-drop-zone.drag-over {
+            border-color: var(--brand); background: rgba(16,185,129,.05); color: var(--brand);
+        }
+        .upload-drop-zone i { font-size: 28px; display: block; margin-bottom: 6px; }
+        .category-chip {
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text3);
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+            font-family: 'Inter', sans-serif;
+        }
+        .category-chip:hover {
+            color: var(--text2);
+            background: rgba(255, 255, 255, 0.05);
+        }
+        .category-chip.active {
+            color: #fff;
+            background: var(--brand-glow);
+            border-color: var(--brand);
+            box-shadow: 0 0 12px rgba(16, 185, 129, 0.15);
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-glow" style="width:400px;height:400px;background:rgba(16,185,129,0.06);top:-100px;right:-100px;position:fixed;"></div>
+    <div class="bg-glow" style="width:400px;height:400px;background:rgba(59,130,246,0.05);bottom:-100px;left:-100px;position:fixed;"></div>
+
+    <header class="glass">
+        <div class="logo">
+            <div class="logo-icon"><i class="ph ph-robot"></i></div>
+            <div class="logo-text">
+                <h1>Bot de Tienda</h1>
+                <span>Live Dashboard</span>
+            </div>
+        </div>
+        <div class="tabs">
+            <button class="tab-btn active" onclick="switchTab('chats')" id="tabChats">
+                <i class="ph ph-chats-circle"></i> Chats <span class="badge" id="chatCount">0</span>
+            </button>
+            <button class="tab-btn" onclick="switchTab('products')" id="tabProducts">
+                <i class="ph ph-storefront"></i> Productos <span class="badge" id="productCount">0</span>
+            </button>
+            <button class="tab-btn" onclick="switchTab('bots')" id="tabBots">
+                <i class="ph ph-robot"></i> Mis Datos
+            </button>
+        </div>
+        <div class="header-actions">
+            <button class="btn-icon" onclick="refreshAll()" title="Refrescar"><i class="ph ph-arrows-clockwise"></i></button>
+            <button class="btn-icon" onclick="logout()" title="Cerrar Sesión" style="color:var(--red);"><i class="ph ph-sign-out"></i></button>
+        </div>
+    </header>
+
+    <main>
+
+        <div class="tab-page active" id="pageChats">
+            <div class="chat-layout">
+                <aside class="sidebar glass">
+                    <div class="sidebar-search">
+                        <i class="ph ph-magnifying-glass"></i>
+                        <input type="text" placeholder="Buscar número..." oninput="filterSessions(this.value)">
+                    </div>
+                    <div class="sessions-list" id="sessionsList">
+                        <div class="empty-state" style="padding:40px;">
+                            <i class="ph ph-spinner" style="font-size:24px;animation:spin 1s linear infinite"></i>
+                            <p style="margin-top:10px;">Cargando...</p>
+                        </div>
+                    </div>
+                </aside>
+                <section class="chat-area">
+                    <div class="chat-header" id="chatHeader" style="display:none;">
+                        <div class="avatar"><i class="ph ph-whatsapp-logo"></i></div>
+                        <div class="info">
+                            <h3 id="activeUserPhone"></h3>
+                            <span id="chatStatusText"><span class="dot"></span> Interacción Reciente</span>
+                        </div>
+                        <button id="btnToggleBot" onclick="toggleBotPause()" title="Reactivar Bot"
+                            style="margin-left:auto;background:var(--brand);color:white;border:none;border-radius:8px;padding:6px 14px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:5px;display:none;">
+                            <i class="ph ph-robot"></i> Reactivar Bot
+                        </button>
+                        <button onclick="clearActiveChat()" title="Limpiar historial"
+                            style="margin-left:8px;background:#ff4d4d;color:white;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:5px;">
+                            <i class="ph ph-trash"></i> Limpiar chat
+                        </button>
+                    </div>
+                    <div class="empty-state" id="chatEmpty">
+                        <div class="empty-icon"><i class="ph ph-chats"></i></div>
+                        <h3>Ningún chat seleccionado</h3>
+                        <p>Selecciona una conversación del panel lateral.</p>
+                    </div>
+                    <div class="chat-messages" id="chatMessages" style="display:none;"></div>
+                    <div class="chat-input-area" id="chatInputArea" style="display:none;">
+                        <input type="text" id="humanReplyInput"
+                            placeholder="Escribe para responder (el bot se pausará)..."
+                            onkeypress="if(event.key === 'Enter') sendHumanReply()">
+                        <button onclick="sendHumanReply()"><i class="ph ph-paper-plane-right"></i></button>
+                    </div>
+                </section>
+            </div>
+        </div>
+
+        <div class="tab-page" id="pageProducts">
+            <div class="products-layout">
+                <div class="products-toolbar">
+                    <div style="display:flex;align-items:center;gap:16px;">
+                        <h2><i class="ph ph-package" style="vertical-align:middle;margin-right:6px;"></i> Catálogo</h2>
+                    </div>
+                    <div style="display:flex;gap:8px;">
+                        <button class="btn-primary" onclick="openProductModal()">
+                            <i class="ph ph-plus-circle"></i> Agregar Producto
+                        </button>
+                    </div>
+                </div>
+                <div class="categories-tabs-container" id="categoriesTabs" style="display:flex;gap:8px;padding:12px 24px;border-bottom:1px solid var(--border);overflow-x:auto;">
+                    <!-- Cargado dinámicamente -->
+                </div>
+                <div class="products-grid" id="productsGrid"></div>
+            </div>
+        </div>
+
+        <div class="tab-page" id="pageBots">
+            <div class="products-layout">
+                <div class="products-toolbar">
+                    <h2><i class="ph ph-robot" style="vertical-align:middle;margin-right:6px;"></i> Administrador de Bots</h2>
+                    </div>
+                <div class="bots-grid" id="botsGrid"></div>
+            </div>
+        </div>
+
+    </main>
+
+    <div class="modal-overlay hidden" id="productModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="modalTitle">Nuevo Producto</h3>
+                <button class="btn-icon" onclick="closeProductModal()"><i class="ph ph-x"></i></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="pId">
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Nombre / Título *</label>
+                        <input type="text" id="pNombre" placeholder="Ej: Anillo de Oro 18K con Diamante">
+                    </div>
+                    <div class="form-group">
+                        <label>Categoría *</label>
+                        <select id="pCategoria" class="text-[#F8FAFC] border border-[#2A3441] rounded-[8px] p-2" style="color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px;">
+                            <!-- Cargado dinámicamente -->
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Peso (g)</label>
+                        <input type="number" step="0.01" id="pPeso" placeholder="Ej: 4.5" min="0">
+                    </div>
+                    <div class="form-group">
+                        <label>Disponibilidad / Stock</label>
+                        <input type="number" id="pStock" placeholder="Ej: 5" min="0">
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Precio (COP)</label>
+                        <input type="number" id="pPrecio" placeholder="Ej: 850000" min="0">
+                    </div>
+                    <div class="form-group" style="display:none;">
+                        <label>Metros Cuadrados</label>
+                        <input type="number" id="pMetros" placeholder="0" min="0">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Características / Detalles</label>
+                    <div style="display:flex;gap:8px;">
+                        <input type="text" id="pCaracteristicaInput"
+                            placeholder="Ej: Garantía de por vida, Estuche incluido..."
+                            style="flex:1;"
+                            onkeypress="if(event.key==='Enter'){event.preventDefault();addCaracteristica();}">
+                        <button type="button" onclick="addCaracteristica()" class="btn-primary" style="padding:0 16px;">Agregar</button>
+                    </div>
+                    <div id="pCaracteristicasContainer" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;"></div>
+                </div>
+
+                <div class="form-group">
+                    <label>Fotos del producto</label>
+                    <div class="upload-drop-zone" id="dropZone" onclick="document.getElementById('pFotos').click()">
+                        <i class="ph ph-cloud-arrow-up"></i>
+                        <span>Haz clic o arrastra imágenes aquí</span>
+                        <small style="display:block;margin-top:4px;font-size:11px;">JPG, PNG, WebP — múltiples permitidas</small>
+                    </div>
+                    <input type="file" id="pFotos" multiple accept="image/*" style="display:none;" onchange="handleFileSelect(this.files)">
+                    <div class="uploading-preview" id="imagePreviewContainer"></div>
+                    <div id="uploadProgress" style="display:none;margin-top:8px;font-size:12px;color:var(--brand);">
+                        <i class="ph ph-spinner" style="animation:spin 1s linear infinite;vertical-align:middle;"></i>
+                        <span id="uploadProgressText">Subiendo imágenes...</span>
+                    </div>
+                </div>
+
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" onclick="closeProductModal()">Cancelar</button>
+                <button class="btn-primary" onclick="saveProduct()" id="btnSave">
+                    <i class="ph ph-floppy-disk"></i> Guardar
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay hidden" id="storeModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="storeModalTitle">Configurar Correo de Citas</h3>
+                <button class="btn-icon" onclick="closeStoreModal()"><i class="ph ph-x"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label><i class="ph ph-calendar-check" style="vertical-align:middle;margin-right:4px;"></i> Correo Admin Google Calendar</label>
+                    <input type="email" id="sAdminCalendarEmail" placeholder="ej: admin@miempresa.com">
+                    <small style="color:var(--text2);font-size:11px;display:block;margin-top:4px;">Este correo se utilizará para gestionar la agenda automática de citas mediante el bot.</small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" onclick="closeStoreModal()">Cancelar</button>
+                <button class="btn-primary" onclick="saveStore()" id="btnSaveStore">Guardar Cambios</button>
+            </div>
+        </div>
+    </div>
+
+    
+
+    <script>
+    // ═══════════════════════════════════════
+    //  NOTIFICATIONS (TOASTS)
+    // ═══════════════════════════════════════
+    function showToast(message, type = 'success') {
+        Toastify({
+            text: message,
+            duration: 3500,
+            close: true,
+            gravity: "top",
+            position: "right",
+            stopOnFocus: true,
+            style: {
+                background: type === 'success' ? 'rgba(16, 185, 129, 0.95)' : 'rgba(239, 68, 68, 0.95)',
+                color: '#F8FAFC',
+                backdropFilter: 'blur(10px)',
+                border: type === 'success' ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
+                borderRadius: '10px',
+                boxShadow: type === 'success' ? '0 10px 30px rgba(16, 185, 129, 0.2)' : '0 10px 30px rgba(239, 68, 68, 0.2)',
+                fontFamily: 'Inter, sans-serif',
+                fontSize: '13px',
+                fontWeight: '500',
+                padding: '12px 20px',
+                zIndex: '99999'
+            }
+        }).showToast();
+    }
+
+    // ═══════════════════════════════════════
+    //  STATE
+    // ═══════════════════════════════════════
+    let allSessions   = [];
+    let allProducts   = [];
+    let allStores     = [];
+    let allCategorias     = [];
+    let activeCategoriaId = '';
+    let activeSessionId   = null;
+    let editingProductId  = null;
+    let editingStoreId    = null;
+    let currentCaracteristicas = [];
+    let currentImages = [];
+    let serverOnline  = true;
+
+    // ═══════════════════════════════════════
+    //  UTILS
+    // ═══════════════════════════════════════
+    function escapeHTML(str) {
+        if (!str) return '';
+        return String(str)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
+
+    function cleanPhone(sessionId) {
+        let phone = sessionId.includes('_') ? sessionId.split('_').slice(1).join('_') : sessionId;
+        phone = phone.replace(/@.*$/, '');
+        if (phone.length >= 10) {
+            const cc = phone.slice(0, phone.length - 10);
+            const local = phone.slice(phone.length - 10);
+            return '+' + cc + ' ' + local.slice(0,3) + ' ' + local.slice(3,6) + ' ' + local.slice(6);
+        }
+        return '+' + phone;
+    }
+
+    function formatTime(t) {
+        if (!t) return '';
+        try {
+            let d = new Date(t);
+            if (isNaN(d.getTime())) d = new Date(t + 'Z');
+            if (isNaN(d.getTime())) return '';
+            const diffMins = Math.floor((Date.now() - d) / 60000);
+            if (diffMins < 1)    return 'Ahora';
+            if (diffMins < 60)   return diffMins + ' min';
+            if (diffMins < 1440) return Math.floor(diffMins / 60) + 'h';
+            return d.toLocaleDateString([], { day: '2-digit', month: 'short' });
+        } catch(e) { return ''; }
+    }
+
+    function showOfflineBanner(show) {
+        let banner = document.getElementById('offlineBanner');
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.id = 'offlineBanner';
+            banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#ef4444;color:white;text-align:center;padding:8px;font-size:13px;font-weight:600;transition:transform .3s;';
+            banner.innerHTML = '<i class="ph ph-wifi-slash" style="margin-right:6px;"></i> Servidor desconectado — reconectando automáticamente...';
+            document.body.prepend(banner);
+        }
+        banner.style.transform = show ? 'translateY(0)' : 'translateY(-100%)';
+    }
+
+    async function safeFetch(url, options) {
+        try {
+            const opts = { credentials: 'same-origin', ...options };
+            const res = await fetch(url, opts);
+            if (!serverOnline) { serverOnline = true; showOfflineBanner(false); }
+            // Global auth redirect detection
+            if (res.redirected && res.url.includes('login')) {
+                window.location.href = '/login.html';
+                return null;
+            }
+            return res;
+        } catch(e) {
+            if (serverOnline) { serverOnline = false; showOfflineBanner(true); }
+            return null;
+        }
+    }
+
+    async function logout() {
+        if (!confirm('¿Cerrar sesión?')) return;
+        try {
+            await fetch('/api/auth/logout', { method: 'POST' });
+            window.location.href = '/login.html';
+        } catch(e) { console.error(e); }
+    }
+
+    // ═══════════════════════════════════════
+    //  TABS
+    // ═══════════════════════════════════════
+    async function switchTab(tab) {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-page').forEach(p => p.classList.remove('active'));
+        const map = { chats: ['tabChats','pageChats'], products: ['tabProducts','pageProducts'], bots: ['tabBots','pageBots'] };
+        const [btnId, pageId] = map[tab] || [];
+        if (btnId) document.getElementById(btnId).classList.add('active');
+        if (pageId) document.getElementById(pageId).classList.add('active');
+        if (tab === 'products') {
+            await loadCategorias();
+            await loadProducts();
+        }
+        if (tab === 'bots')     loadStores();
+    }
+
+    function refreshAll() {
+        loadSessions();
+        loadProducts();
+        loadStores();
+    }
+
+    // ═══════════════════════════════════════
+    //  CHATS
+    // ═══════════════════════════════════════
+    async function loadSessions() {
+        const res = await safeFetch('/dashboard/api/sessions');
+        if (!res) return;
+        const data = await res.json();
+        if (Array.isArray(data)) {
+            allSessions = data;
+            document.getElementById('chatCount').textContent = allSessions.length;
+            renderSessionsList();
+        }
+    }
+
+    function filterSessions(val) {
+        document.querySelectorAll('#sessionsList .session-item').forEach(item => {
+            item.style.display = (item.getAttribute('data-phone') || '').includes(val) ? '' : 'none';
+        });
+    }
+
+    function renderSessionsList() {
+        const list = document.getElementById('sessionsList');
+        if (!list) return;
+        const existing = {};
+        list.querySelectorAll('.session-item').forEach(el => { existing[el.getAttribute('data-phone')] = el; });
+        const currentIds = new Set(allSessions.map(s => s.sessionId));
+        Object.keys(existing).forEach(id => { if (!currentIds.has(id)) existing[id].remove(); });
+        const emptyEl = list.querySelector('.empty-state'); if (emptyEl) emptyEl.remove();
+
+        if (allSessions.length === 0) {
+            list.innerHTML = '<div class="empty-state" style="padding:40px;"><p>No hay conversaciones aún.</p></div>';
+            return;
+        }
+
+        allSessions.forEach(s => {
+            const history = Array.isArray(s.history) ? s.history : [];
+            const last = history.slice().reverse().find(m => m.role === 'user' || m.role === 'assistant');
+            let preview = last ? (typeof last.content === 'string' ? last.content : 'Envió un mensaje') : '—';
+            if (preview.length > 40) preview = preview.substring(0, 40) + '…';
+            const ic = `<div class="top"><span class="phone">${escapeHTML(cleanPhone(s.sessionId))}</span><span class="time">${formatTime(s.updatedAt)}</span></div><div class="preview">${last?.role==='assistant'?'<i class="ph ph-robot" style="color:var(--brand);margin-right:4px;vertical-align:middle;"></i>':''}${escapeHTML(preview)}</div>`;
+            const hash = preview + '|' + (s.updatedAt || '');
+            let div = existing[s.sessionId];
+            if (div) {
+                if (div._hash !== hash) { div.innerHTML = ic; div._hash = hash; }
+                div.classList.toggle('active', activeSessionId === s.sessionId);
+            } else {
+                div = document.createElement('div');
+                div.className = 'session-item' + (activeSessionId === s.sessionId ? ' active' : '');
+                div.setAttribute('data-phone', s.sessionId);
+                div.onclick = () => selectSession(s.sessionId);
+                div.innerHTML = ic; div._hash = hash;
+                list.appendChild(div);
+            }
+        });
+
+        if (activeSessionId) {
+            const current = allSessions.find(x => x.sessionId === activeSessionId);
+            if (current) renderActiveChat(current);
+        }
+    }
+
+    function selectSession(sid) {
+        activeSessionId = sid;
+        document.querySelectorAll('.session-item').forEach(el => {
+            el.classList.toggle('active', el.getAttribute('data-phone') === sid);
+        });
+        const s = allSessions.find(x => x.sessionId === sid);
+        if (s) renderActiveChat(s);
+    }
+
+    let _lastChatHash = '';
+    function renderActiveChat(s) {
+        const history = Array.isArray(s.history) ? s.history : [];
+        const isPaused = !!s.isPaused;
+        const chatHash = s.sessionId + '|' + history.length + '|' + isPaused + '|' + JSON.stringify(history[history.length-1]?.content||'').substring(0,50);
+        if (_lastChatHash === chatHash) return;
+        _lastChatHash = chatHash;
+
+        document.getElementById('chatEmpty').style.display     = 'none';
+        document.getElementById('chatHeader').style.display    = 'flex';
+        document.getElementById('chatInputArea').style.display = 'flex';
+        const msgs = document.getElementById('chatMessages');
+        msgs.style.display = 'flex';
+        msgs.innerHTML = '';
+        document.getElementById('activeUserPhone').textContent = cleanPhone(s.sessionId);
+
+        const statusEl  = document.getElementById('chatStatusText');
+        const btnToggle = document.getElementById('btnToggleBot');
+        if (isPaused) {
+            statusEl.innerHTML = '<span class="dot" style="background:var(--yellow);"></span> Bot Pausado — respondiendo tú';
+            btnToggle.style.display = 'flex';
+        } else {
+            statusEl.innerHTML = '<span class="dot"></span> Interacción Reciente';
+            btnToggle.style.display = 'none';
+        }
+
+        history.forEach(m => {
+            if (m.role === 'system') return;
+            const div = document.createElement('div');
+            div.className = 'msg';
+            let content = typeof m.content === 'string' ? m.content : '';
+            if (m.role === 'user') {
+                div.classList.add('user');
+                if (Array.isArray(m.content)) { const tp = m.content.find(c => c.type==='text'); content = tp?.text||''; }
+                div.textContent = content || 'Sent a message';
+            } else if (m.role === 'assistant' && !m.tool_calls) {
+                div.classList.add('assistant');
+                div.textContent = content;
+            } else if (m.role === 'assistant' && m.tool_calls) {
+                div.classList.add('tool-msg');
+                div.innerHTML = '<i class="ph ph-gear" style="animation:spin 1s linear infinite"></i> ' + m.tool_calls[0].function.name;
+            } else if (m.role === 'tool') {
+                div.classList.add('tool-msg');
+                div.innerHTML = '<i class="ph ph-check-circle" style="color:var(--brand)"></i> Resultado recibido';
+            } else return;
+            msgs.appendChild(div);
+        });
+        msgs.scrollTo({ top: msgs.scrollHeight, behavior: 'instant' });
+    }
+
+    async function sendHumanReply() {
+        if (!activeSessionId) return;
+        const input   = document.getElementById('humanReplyInput');
+        const message = input.value.trim();
+        if (!message) return;
+        input.value = '';
+        const parts   = activeSessionId.split('_');
+        const storeId = parts[0];
+        const phone   = parts.length > 1 ? parts.slice(1).join('_') : activeSessionId;
+        const res = await safeFetch('/dashboard/api/reply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: activeSessionId, message, phone, storeId })
+        });
+        if (res) { _lastChatHash = ''; await loadSessions(); }
+        else alert('Error enviando mensaje');
+    }
+
+    async function toggleBotPause() {
+        if (!activeSessionId) return;
+        const res = await safeFetch('/dashboard/api/resume', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: activeSessionId })
+        });
+        if (res && res.ok) { _lastChatHash = ''; await loadSessions(); }
+        else alert('Error reactivando bot');
+    }
+
+    async function clearActiveChat() {
+        if (!activeSessionId) return;
+        if (!confirm('¿Limpiar el historial de este chat? El bot empezará desde cero con este usuario.')) return;
+        const res = await safeFetch(`/dashboard/api/sessions/${encodeURIComponent(activeSessionId)}`, { method: 'DELETE' });
+        if (res && res.ok) {
+            activeSessionId = null;
+            _lastChatHash = '';
+            document.getElementById('chatHeader').style.display    = 'none';
+            document.getElementById('chatMessages').style.display  = 'none';
+            document.getElementById('chatInputArea').style.display = 'none';
+            document.getElementById('chatEmpty').style.display     = 'flex';
+            await loadSessions();
+        } else alert('Error limpiando chat');
+    }
+
+    // ═══════════════════════════════════════
+    //  PRODUCTS
+    // ═══════════════════════════════════════
+    async function loadProducts() {
+        const url = activeCategoriaId ? `/dashboard/api/products?categoriaId=${encodeURIComponent(activeCategoriaId)}` : '/dashboard/api/products';
+        const res = await safeFetch(url);
+        if (!res) return;
+        allProducts = await res.json();
+        document.getElementById('productCount').textContent = allProducts.length;
+        renderProducts();
+    }
+
+    // ═══════════════════════════════════════
+    //  CATEGORÍAS
+    // ═══════════════════════════════════════
+    async function loadCategorias() {
+        const res = await safeFetch('/dashboard/api/categorias');
+        if (!res) return;
+        allCategorias = await res.json();
+        renderCategoriasTabs();
+        populateCategoriasDropdown();
+    }
+
+    function renderCategoriasTabs() {
+        const container = document.getElementById('categoriesTabs');
+        if (!container) return;
+        container.innerHTML = '';
+
+        // Pestaña "Todas"
+        const allTab = document.createElement('button');
+        allTab.className = 'category-chip' + (activeCategoriaId === '' ? ' active' : '');
+        allTab.textContent = 'Todas';
+        allTab.onclick = () => selectCategoria('');
+        container.appendChild(allTab);
+
+        allCategorias.forEach(cat => {
+            const tab = document.createElement('button');
+            tab.className = 'category-chip' + (activeCategoriaId === cat.id ? ' active' : '');
+            tab.textContent = cat.nombre;
+            tab.onclick = () => selectCategoria(cat.id);
+            container.appendChild(tab);
+        });
+    }
+
+    async function selectCategoria(id) {
+        activeCategoriaId = id;
+        renderCategoriasTabs();
+        await loadProducts();
+    }
+
+    function populateCategoriasDropdown() {
+        const select = document.getElementById('pCategoria');
+        if (!select) return;
+        select.innerHTML = '<option value="" style="background-color: var(--panel2); color: var(--text);">Seleccione categoría...</option>';
+        allCategorias.forEach(cat => {
+            const opt = document.createElement('option');
+            opt.value = cat.id;
+            opt.textContent = cat.nombre;
+            opt.style.backgroundColor = 'var(--panel2)';
+            opt.style.color = 'var(--text)';
+            select.appendChild(opt);
+        });
+    }
+
+    function openCategoryModal() {
+        document.getElementById('catNombre').value = '';
+        document.getElementById('categoryModal').classList.remove('hidden');
+    }
+
+    function closeCategoryModal() {
+        document.getElementById('categoryModal').classList.add('hidden');
+    }
+
+    async function saveCategory() {
+        const nombre = document.getElementById('catNombre').value.trim();
+        if (!nombre) { showToast('El nombre es obligatorio', 'error'); return; }
+
+        const btn = document.getElementById('btnSaveCategory');
+        btn.disabled = true;
+        btn.innerHTML = '<i class="ph ph-spinner" style="animation:spin 1s linear infinite"></i> Guardando...';
+
+        try {
+            const res = await safeFetch('/dashboard/api/categorias', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ nombre })
+            });
+            if (!res) throw new Error('No se pudo conectar al servidor');
+            // Detect auth redirect (server returned HTML login page)
+            const contentType = res.headers.get('content-type') || '';
+            if (!contentType.includes('application/json')) {
+                if (res.redirected || res.url.includes('login')) {
+                    window.location.href = '/login.html';
+                    return;
+                }
+                throw new Error('Error inesperado del servidor');
+            }
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err?.error || 'Error al guardar categoría');
+            }
+            closeCategoryModal();
+            showToast('Categoría creada con éxito', 'success');
+            await loadCategorias();
+        } catch (e) {
+            showToast(e.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="ph ph-floppy-disk"></i> Guardar';
+        }
+    }
+
+    function renderProducts() {
+        const grid = document.getElementById('productsGrid');
+        grid.innerHTML = '';
+        if (allProducts.length === 0) {
+            grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;padding:60px;"><div class="empty-icon"><i class="ph ph-package"></i></div><h3>Sin productos</h3><p>Agrega tu primer producto con el botón de arriba.</p></div>';
+            return;
+        }
+        allProducts.forEach(p => {
+            const card = document.createElement('div');
+            card.className = 'product-card';
+            card.style.cssText = 'padding:0;overflow:hidden;display:grid;grid-template-columns:140px 1fr;min-height:110px;';
+            const priceStr = new Intl.NumberFormat('es-CO', { style:'currency', currency:'COP', maximumFractionDigits:0 }).format(p.precio);
+            const firstPhoto = (Array.isArray(p.imagenes) && p.imagenes.length > 0) ? p.imagenes[0] : (p.imagen_url || '');
+            const imgHTML = firstPhoto
+                ? `<img src="${escapeHTML(firstPhoto)}" alt="${escapeHTML(p.nombre)}" style="width:140px;height:100%;object-fit:cover;display:block;">`
+                : `<div style="width:140px;min-height:110px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(255,255,255,0.03);color:var(--text3);gap:4px;"><i class="ph ph-image" style="font-size:24px;"></i><span style="font-size:10px;">Sin foto</span></div>`;
+            card.innerHTML = `
+                ${imgHTML}
+                <div style="display:grid;grid-template-rows:auto auto 1fr;padding:12px 14px;gap:6px;min-width:0;">
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0;overflow:hidden;">
+                        <span style="font-size:13px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;" title="${escapeHTML(p.nombre)}">${escapeHTML(p.nombre)}</span>
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:4px;">
+                        <span style="font-size:15px;font-weight:700;color:var(--brand);">${priceStr}</span>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;color:var(--text3);font-size:11px;">
+                            ${p.peso ? `<span title="Peso"><i class="ph ph-scales" style="vertical-align:middle;"></i> ${p.peso}g</span>` : ''}
+                        </div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;align-self:end;">
+                        <button class="btn-sm btn-edit" style="justify-content:center;"><i class="ph ph-pencil-simple"></i> Editar</button>
+                        <button class="btn-sm danger btn-delete" style="justify-content:center;"><i class="ph ph-trash"></i> Eliminar</button>
+                    </div>
+                </div>`;
+            card.querySelector('.btn-edit').onclick   = () => editProduct(p.id);
+            card.querySelector('.btn-delete').onclick = () => confirmDelete(p.id, p.nombre);
+            grid.appendChild(card);
+        });
+    }
+
+    // ── Características ──
+    function addCaracteristica() {
+        const input = document.getElementById('pCaracteristicaInput');
+        const val = input.value.trim();
+        if (!val || currentCaracteristicas.includes(val)) { input.value=''; return; }
+        currentCaracteristicas.push(val);
+        input.value = '';
+        renderCaracteristicas();
+    }
+
+    function removeCaracteristica(index) {
+        currentCaracteristicas.splice(index, 1);
+        renderCaracteristicas();
+    }
+
+    function renderCaracteristicas() {
+        const container = document.getElementById('pCaracteristicasContainer');
+        container.innerHTML = '';
+        currentCaracteristicas.forEach((c, i) => {
+            const badge = document.createElement('span');
+            badge.className = 'card-badge badge-active';
+            badge.style.cssText = 'display:inline-flex;align-items:center;gap:4px;cursor:default;text-transform:none;';
+            badge.innerHTML = `${escapeHTML(c)} <i class="ph ph-x" style="cursor:pointer;" onclick="removeCaracteristica(${i})"></i>`;
+            container.appendChild(badge);
+        });
+    }
+
+    // ── Imágenes ──
+    // Convierte cualquier imagen a WebP antes de subirla (resize máx 1600px, calidad 0.82).
+    // Devuelve Promise<{ dataUrl, isWebp }> con el data URL a usar y si es WebP.
+    const MAX_IMG_SIZE = 1600;
+    const WEBP_QUALITY = 0.82;
+    function convertToWebp(file) {
+        return new Promise((resolve) => {
+            if (!file.type.startsWith('image/')) {
+                resolve({ dataUrl: null, isWebp: false, error: 'No es una imagen' });
+                return;
+            }
+            const reader = new FileReader();
+            reader.onerror = () => resolve({ dataUrl: null, isWebp: false, error: 'No se pudo leer el archivo' });
+            reader.onload = () => {
+                const originalDataUrl = reader.result;
+                const img = new Image();
+                let settled = false;
+                const finish = (result) => { if (!settled) { settled = true; resolve(result); } };
+                // Timeout de seguridad: si la imagen no decodifica en 10s, usamos el original
+                const timeout = setTimeout(() => {
+                    finish({ dataUrl: originalDataUrl, isWebp: false, error: 'Timeout decodificando' });
+                }, 10000);
+                img.onerror = () => {
+                    clearTimeout(timeout);
+                    finish({ dataUrl: originalDataUrl, isWebp: false, error: 'Imagen corrupta o no soportada' });
+                };
+                img.onload = () => {
+                    clearTimeout(timeout);
+                    try {
+                        let { width, height } = img;
+                        if (width > MAX_IMG_SIZE || height > MAX_IMG_SIZE) {
+                            const scale = MAX_IMG_SIZE / Math.max(width, height);
+                            width  = Math.round(width  * scale);
+                            height = Math.round(height * scale);
+                        }
+                        const canvas = document.createElement('canvas');
+                        canvas.width  = width;
+                        canvas.height = height;
+                        const ctx = canvas.getContext('2d');
+                        if (!ctx) throw new Error('Canvas no disponible');
+                        ctx.drawImage(img, 0, 0, width, height);
+                        const webpDataUrl = canvas.toDataURL('image/webp', WEBP_QUALITY);
+                        // toDataURL devuelve algo aunque el navegador no soporte webp (cae a png)
+                        if (webpDataUrl && webpDataUrl.startsWith('data:image/webp')) {
+                            finish({ dataUrl: webpDataUrl, isWebp: true, error: null });
+                        } else {
+                            finish({ dataUrl: webpDataUrl || originalDataUrl, isWebp: false, error: null });
+                        }
+                    } catch (e) {
+                        finish({ dataUrl: originalDataUrl, isWebp: false, error: e.message });
+                    }
+                };
+                img.src = originalDataUrl;
+            };
+            reader.readAsDataURL(file);
+        });
+    }
+
+    async function handleFileSelect(files) {
+        const fileArray = Array.from(files);
+        document.getElementById('pFotos').value = '';
+        for (const file of fileArray) {
+            if (!file.type.startsWith('image/')) continue;
+            const result = await convertToWebp(file);
+            if (!result.dataUrl) {
+                showToast(`Error procesando "${file.name}": ${result.error || 'desconocido'}`, 'error');
+                continue;
+            }
+            // Siempre subimos como webp el backend lo guarda así; el preview puede
+            // ser el webp o el formato original (si el navegador no soporta webp).
+            if (result.error && !result.isWebp) {
+                console.warn(`[img] "${file.name}" no se convirtió a WebP: ${result.error}. Se subirá en formato original.`);
+            }
+            currentImages.push({ file, previewUrl: result.dataUrl, cloudinaryUrl: null, status: 'pending' });
+            renderImagePreviews();
+        }
+    }
+
+    function removeImage(index) {
+        currentImages.splice(index, 1);
+        renderImagePreviews();
+    }
+
+    function renderImagePreviews() {
+        const container = document.getElementById('imagePreviewContainer');
+        container.innerHTML = '';
+        currentImages.forEach((img, i) => {
+            const wrap = document.createElement('div');
+            wrap.className = 'img-thumb-wrap';
+            const statusLabel = img.status === 'existing' ? '' : img.status === 'uploaded' ? '✓' : '...';
+            const statusBg    = img.status === 'uploaded' ? 'rgba(16,185,129,0.7)' : img.status === 'existing' ? 'transparent' : 'rgba(0,0,0,0.55)';
+            wrap.innerHTML = `
+                <img src="${img.previewUrl || img.cloudinaryUrl}" alt="">
+                <button class="remove-img" onclick="removeImage(${i})"><i class="ph ph-x"></i></button>
+                ${statusLabel ? `<div class="upload-status" style="background:${statusBg};">${statusLabel}</div>` : ''}`;
+            container.appendChild(wrap);
+        });
+    }
+
+    async function uploadPendingImages(folder) {
+        const pending = currentImages.filter(img => img.status === 'pending');
+        if (pending.length === 0) return;
+
+        const uploadFolder = folder || `prod_${Date.now()}`;
+        const base64List = pending.map(img => img.previewUrl);
+
+        document.getElementById('uploadProgress').style.display = 'block';
+        document.getElementById('uploadProgressText').textContent = `Subiendo ${pending.length} imagen(es)...`;
+
+        const res = await safeFetch('/dashboard/api/upload-images', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ images: base64List, folder: uploadFolder })
+        });
+
+        document.getElementById('uploadProgress').style.display = 'none';
+
+        if (!res || !res.ok) {
+            let msg = 'Error subiendo imágenes a Supabase';
+            try { const err = await res?.json(); if (err?.error) msg += `: ${err.error}`; } catch (_) {}
+            throw new Error(msg);
+        }
+        const { urls } = await res.json();
+
+        let urlIndex = 0;
+        currentImages.forEach(img => {
+            if (img.status === 'pending') {
+                img.cloudinaryUrl = urls[urlIndex++];
+                img.status = 'uploaded';
+            }
+        });
+        renderImagePreviews();
+    }
+
+    // ── Modal CRUD ──
+    function resetProductModal() {
+        document.getElementById('pId').value           = '';
+        document.getElementById('pNombre').value       = '';
+        document.getElementById('pPeso').value = '';
+        document.getElementById('pStock').value        = '';
+        document.getElementById('pPrecio').value       = '';
+        document.getElementById('pMetros').value       = '';
+        document.getElementById('pFotos').value        = '';
+        document.getElementById('pCategoria').value     = '';
+        currentCaracteristicas = [];
+        currentImages = [];
+        renderCaracteristicas();
+        renderImagePreviews();
+    }
+
+    function openProductModal() {
+        editingProductId = null;
+        document.getElementById('modalTitle').textContent = 'Nuevo Producto';
+        resetProductModal();
+        document.getElementById('productModal').classList.remove('hidden');
+    }
+
+    function editProduct(id) {
+        const p = allProducts.find(x => x.id === id);
+        if (!p) return;
+        editingProductId = id;
+        document.getElementById('modalTitle').textContent    = 'Editar Producto';
+        document.getElementById('pId').value                 = p.id;
+        document.getElementById('pNombre').value             = p.nombre || '';
+        document.getElementById('pPeso').value       = p.peso || '';
+        document.getElementById('pStock').value              = p.stock || '';
+        document.getElementById('pPrecio').value             = p.precio || '';
+        document.getElementById('pMetros').value             = p.metros_cuadrados || '';
+        document.getElementById('pFotos').value              = '';
+        document.getElementById('pCategoria').value          = p.categoriaId || '';
+        currentCaracteristicas = Array.isArray(p.caracteristicas) ? [...p.caracteristicas] : [];
+        currentImages = (Array.isArray(p.imagenes) ? p.imagenes : []).map(url => ({
+            file: null, previewUrl: url, cloudinaryUrl: url, status: 'existing'
+        }));
+        renderCaracteristicas();
+        renderImagePreviews();
+        document.getElementById('productModal').classList.remove('hidden');
+    }
+
+    function closeProductModal() {
+        document.getElementById('productModal').classList.add('hidden');
+    }
+
+    async function saveProduct() {
+        const nombre = document.getElementById('pNombre').value.trim();
+        if (!nombre) { alert('El nombre es obligatorio'); return; }
+
+        const storeId = allStores.length > 0 ? allStores[0].id : null;
+        if (!storeId) { alert('No hay ninguna tienda configurada. Ve a "Mis Datos" y crea una.'); return; }
+
+        // Carpeta temporal para las imágenes nuevas (basada en timestamp).
+        // El id del producto lo genera automáticamente la base de datos.
+        const imgFolder = `prod_${Date.now()}`;
+
+        const btn = document.getElementById('btnSave');
+        btn.disabled = true;
+        btn.innerHTML = '<i class="ph ph-spinner" style="animation:spin 1s linear infinite"></i> Guardando...';
+
+        try {
+            await uploadPendingImages(imgFolder);
+
+            const imagenes = currentImages
+                .filter(img => img.cloudinaryUrl)
+                .map(img => img.cloudinaryUrl);
+
+            const body = {
+                nombre,
+                storeId,
+                peso:             parseFloat(document.getElementById('pPeso').value) || 0,
+                stock:            parseInt(document.getElementById('pStock').value) || 0,
+                precio:           parseFloat(document.getElementById('pPrecio').value) || 0,
+                caracteristicas:  currentCaracteristicas,
+                imagenes,
+                imagen_url:       imagenes[0] || '',
+                categoriaId:      document.getElementById('pCategoria').value,
+            };
+
+            const url    = editingProductId ? `/dashboard/api/products/${editingProductId}` : '/dashboard/api/products';
+            const method = editingProductId ? 'PUT' : 'POST';
+            const res    = await safeFetch(url, {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+
+            if (!res || !res.ok) {
+                const err = await res?.json();
+                throw new Error(err?.error || 'Error al guardar');
+            }
+
+            closeProductModal();
+            await loadProducts();
+            showToast(editingProductId ? 'Producto actualizado con éxito' : 'Producto agregado con éxito', 'success');
+        } catch(e) {
+            showToast(e.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="ph ph-floppy-disk"></i> Guardar';
+        }
+    }
+
+    async function confirmDelete(id, nombre) {
+        if (!confirm(`¿Eliminar "${nombre}"? Esta acción no se puede deshacer.`)) return;
+        const storeId = allStores.length > 0 ? allStores[0].id : '';
+        const res = await safeFetch(`/dashboard/api/products/${id}?storeId=${storeId}`, { method: 'DELETE' });
+        if (res && res.ok) {
+            showToast('Producto eliminado con éxito', 'success');
+            await loadProducts();
+        } else {
+            const err = await res?.json();
+            showToast('Error al eliminar: ' + (err?.error || 'desconocido'), 'error');
+        }
+    }
+
+    const dropZone = document.getElementById('dropZone');
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+    dropZone.addEventListener('drop', e => {
+        e.preventDefault();
+        dropZone.classList.remove('drag-over');
+        handleFileSelect(e.dataTransfer.files);
+    });
+
+    // ═══════════════════════════════════════
+    //  STORES / BOTS
+    // ═══════════════════════════════════════
+    let botPollingIntervals = {};
+
+    async function loadStores() {
+        const res = await safeFetch('/dashboard/api/stores');
+        if (!res) return;
+        allStores = await res.json();
+        renderBots();
+    }
+
+    function renderBots() {
+        const grid = document.getElementById('botsGrid');
+        grid.innerHTML = '';
+        allStores.forEach(s => {
+            const card = document.createElement('div');
+            card.className = 'bot-card';
+            card.id = `bot-card-${s.id}`;
+            card.innerHTML = `
+                <div class="bot-header">
+                    <span class="bot-name">${escapeHTML(s.name)}</span>
+                    <span class="bot-status-pill status-disconnected" id="status-${s.id}">CARGANDO...</span>
+                </div>
+                <div id="qr-area-${s.id}" class="qr-container" style="display:none;">
+                    <canvas id="qr-canvas-${s.id}"></canvas>
+                    <p class="qr-placeholder" style="margin-top:10px;">Escanea con WhatsApp</p>
+                </div>
+                <div id="connected-area-${s.id}" style="display:none;text-align:center;padding:20px;">
+                    <i class="ph ph-check-circle" style="font-size:48px;color:var(--brand);"></i>
+                    <p style="margin-top:10px;font-weight:600;">Bot Conectado</p>
+                </div>
+                <div style="display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,0.03);">
+                    <i class="ph ph-calendar-check" style="font-size:18px;color:var(--brand);margin-top:1px;"></i>
+                    <div style="min-width:0;">
+                        <div style="font-size:11px;color:var(--text3);text-transform:uppercase;font-weight:700;">Google Calendar</div>
+                        <div style="font-size:12px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHTML(s.adminCalendarEmail||'')}">
+                            ${s.adminCalendarEmail ? escapeHTML(s.adminCalendarEmail) : 'Sin correo configurado'}
+                        </div>
+                    </div>
+                </div>
+                <div id="start-btn-area-${s.id}" style="margin-top:auto;margin-bottom:10px;">
+                    <button class="btn-primary" style="width:100%;justify-content:center;" onclick="startBot('${s.id}')">Iniciar Bot / Conectar</button>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <button class="btn-sm" style="flex:1;justify-content:center;" onclick="editStore('${s.id}')"><i class="ph ph-pencil-simple"></i> Configurar Citas</button>
+                    <button class="btn-sm danger" style="flex:1;justify-content:center;" onclick="deleteStore('${s.id}','${escapeHTML(s.name)}')"><i class="ph ph-trash"></i> Eliminar</button>
+                </div>`;
+            grid.appendChild(card);
+            updateBotStatus(s.id);
+        });
+    }
+
+    async function updateBotStatus(storeId) {
+        const res = await safeFetch(`/dashboard/api/bots/status/${storeId}`);
+        if (!res || !res.ok) return;
+        const data = await res.json();
+        const statusPill   = document.getElementById(`status-${storeId}`);
+        const qrArea       = document.getElementById(`qr-area-${storeId}`);
+        const connArea     = document.getElementById(`connected-area-${storeId}`);
+        const startBtnArea = document.getElementById(`start-btn-area-${storeId}`);
+        if (!statusPill) return;
+
+        if (data.status === 'CONNECTED') {
+            statusPill.textContent = 'CONECTADO';
+            statusPill.className = 'bot-status-pill status-connected';
+            qrArea.style.display = 'none'; connArea.style.display = 'block';
+            startBtnArea.innerHTML = `<button class="btn-primary danger" style="width:100%;justify-content:center;background:#ef4444;color:white;" onclick="stopBot('${storeId}')">Detener Bot / Desconectar</button>`;
+            startBtnArea.style.display = 'block';
+            if (botPollingIntervals[storeId]) { clearInterval(botPollingIntervals[storeId]); delete botPollingIntervals[storeId]; }
+        } else if (data.status === 'QR_READY' && data.qr) {
+            statusPill.textContent = 'ESPERANDO QR';
+            statusPill.className = 'bot-status-pill status-qr';
+            qrArea.style.display = 'flex'; connArea.style.display = 'none';
+            startBtnArea.innerHTML = `<button class="btn-primary danger" style="width:100%;justify-content:center;background:#ef4444;color:white;" onclick="stopBot('${storeId}')">Detener Bot / Desconectar</button>`;
+            startBtnArea.style.display = 'block';
+            QRCode.toCanvas(document.getElementById(`qr-canvas-${storeId}`), data.qr, { width: 180 });
+            startPolling(storeId);
+        } else if (data.status === 'CONNECTING') {
+            statusPill.textContent = 'CONECTANDO...';
+            statusPill.className = 'bot-status-pill status-qr';
+            qrArea.style.display = 'none'; connArea.style.display = 'none';
+            startBtnArea.innerHTML = `<button class="btn-primary danger" style="width:100%;justify-content:center;background:#ef4444;color:white;" onclick="stopBot('${storeId}')"><i class="ph ph-spinner" style="animation:spin 1s linear infinite"></i> Detener Conexión</button>`;
+            startBtnArea.style.display = 'block';
+            startPolling(storeId);
+        } else {
+            statusPill.textContent = 'DESCONECTADO';
+            statusPill.className = 'bot-status-pill status-disconnected';
+            qrArea.style.display = 'none'; connArea.style.display = 'none';
+            startBtnArea.innerHTML = `<button class="btn-primary" style="width:100%;justify-content:center;" onclick="startBot('${storeId}')">Iniciar Bot / Conectar</button>`;
+            startBtnArea.style.display = 'block';
+        }
+    }
+
+    function startPolling(storeId) {
+        if (botPollingIntervals[storeId]) return;
+        botPollingIntervals[storeId] = setInterval(() => updateBotStatus(storeId), 3000);
+    }
+
+    async function startBot(storeId) {
+        const btn = document.querySelector(`#start-btn-area-${storeId} button`);
+        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ph ph-spinner" style="animation:spin 1s linear infinite"></i> Iniciando...'; }
+        await safeFetch(`/dashboard/api/bots/start/${storeId}`, { method: 'POST' });
+        updateBotStatus(storeId);
+        startPolling(storeId);
+    }
+
+    async function stopBot(storeId) {
+        const btn = document.querySelector(`#start-btn-area-${storeId} button`);
+        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ph ph-spinner" style="animation:spin 1s linear infinite"></i> Deteniendo...'; }
+        await safeFetch(`/dashboard/api/bots/stop/${storeId}`, { method: 'POST' });
+        if (botPollingIntervals[storeId]) { clearInterval(botPollingIntervals[storeId]); delete botPollingIntervals[storeId]; }
+        updateBotStatus(storeId);
+    }
+
+    async function deleteStore(id, name) {
+        if (!confirm(`¿Eliminar la tienda "${name}"? Se detendrá el bot y se borrarán sus datos.`)) return;
+        await safeFetch(`/dashboard/api/stores/${id}`, { method: 'DELETE' });
+        loadStores();
+    }
+
+    function editStore(id) {
+        const s = allStores.find(x => x.id === id);
+        if (!s) return;
+        editingStoreId = id;
+        document.getElementById('storeModalTitle').textContent   = 'Configurar Correo de Citas';
+        document.getElementById('sAdminCalendarEmail').value     = s.adminCalendarEmail || '';
+        document.getElementById('btnSaveStore').textContent      = 'Guardar Cambios';
+        document.getElementById('storeModal').classList.remove('hidden');
+    }
+
+    function closeStoreModal() { document.getElementById('storeModal').classList.add('hidden'); }
+
+    async function saveStore() {
+        const id = editingStoreId;
+        const currentStore = allStores.find(x => x.id === id) || {};
+        
+        // Se preservan los datos actuales de la tienda y se mapea el nuevo valor de Calendar de forma limpia
+        const body = {
+            id,
+            name:                  currentStore.name || 'Bot de Tienda',
+            systemPrompt:          currentStore.systemPrompt || 'Eres un vendedor experto.',
+            openaiApiKey:          currentStore.openaiApiKey || null,
+            whatsappPhoneNumberId: currentStore.whatsappPhoneNumberId || null,
+            whatsappAccessToken:   currentStore.whatsappAccessToken || null,
+            pqrEmail:              currentStore.pqrEmail || null,
+            adminCalendarEmail:    document.getElementById('sAdminCalendarEmail').value.trim() || null,
+            telegramToken:         currentStore.telegramToken || null,
+            telegramBotActive:     !!currentStore.telegramBotActive,
+            isActive: true
+        };
+
+        const url    = `/dashboard/api/stores/${editingStoreId}`;
+        const method = 'PUT';
+        const res    = await safeFetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+        if (!res || !res.ok) {
+            const err = await res?.json();
+            alert('Error guardando configuración: ' + (err?.error || 'desconocido'));
+            return;
+        }
+        closeStoreModal();
+        loadStores();
+    }
+
+    // ═══════════════════════════════════════
+    //  INIT
+    // ═══════════════════════════════════════
+    async function initDashboard() {
+        await loadStores();
+        await loadCategorias();
+        loadSessions();
+        loadProducts();
+        setInterval(loadSessions, 5000);
+    }
+
+    initDashboard();
+    </script>
+
+    </body>
+</html>
