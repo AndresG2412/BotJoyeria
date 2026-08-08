@@ -98,9 +98,9 @@ async function buildCatalogContext(storeId: string): Promise<string> {
         if (products.length === 0) return '';
         const lines = products.map(p => {
             const price = p.price != null ? `$${p.price}` : 'consultar precio';
-            return `- [ID: ${p.id}] ${p.name} — ${price}${p.description ? ` | ${p.description}` : ''}`;
+            return `- [ID: ${p.id}] ${p.name} — ${price}`;
         }).join('\n');
-        return `\n\nPIEZAS DISPONIBLES EN CATÁLOGO:\n${lines}\n\nCuando el cliente quiera ver una pieza, usa send_product_image con el ID correspondiente.`;
+        return `\n\nPIEZAS DISPONIBLES EN CATÁLOGO:\n${lines}\n\nCuando el cliente pida VER la pieza usa send_product_image con el ID. Para detalles (peso, material, stock, características) usa get_product_details. Nunca repitas detalles en el texto salvo que el cliente los pida.`;
     } catch {
         return '';
     }
@@ -140,6 +140,63 @@ function splitMessages(content: string): string[] {
         .split('||MSG||')
         .map(m => m.trim())
         .filter(m => m.length > 0);
+}
+
+/**
+ * Humaniza la respuesta del modelo:
+ * 1) Quita markdown (asteriscos, viñetas) para que no se vea "formateado" en WhatsApp.
+ * 2) Si el mensaje resultante queda largo, lo parte en varios mensajes cortos
+ *    por límites de oración, de forma que cada uno se envía por separado.
+ */
+export function humanizeAndSplit(content: string, maxLen = 180): string[] {
+    // 1. Quitar markdown: negritas y asteriscos (en WhatsApp no se renderizan)
+    let text = content
+        .replace(/\*\*([^*]+)\*\*/g, '$1')
+        .replace(/\*/g, '')
+        .replace(/_+([^_]+)_+/g, '$1')
+        .replace(/^[#>\s]+/gm, '');
+
+    // 2. Convertir viñetas de lista en texto plano
+    text = text
+        .split('\n')
+        .map(line => line.replace(/^\s*(?:[•\-*]|\d+[.)])\s+/, '').trim())
+        .filter(line => line.length > 0)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    if (!text) return [];
+
+    // 3. Separar por oraciones: puntuación seguida de espacio + mayúscula.
+    //    No rompe precios ($350.000) ni abreviaturas (Mr. 18Kilates).
+    const sentences = text
+        .split(/(?<=[.!?…])\s+(?=[A-ZÁÉÍÓÚÜÑ¿¡])/)
+        .map(s => s.trim())
+        .filter(Boolean);
+
+    const messages: string[] = [];
+    let current = '';
+    const pushChunk = (chunk: string) => {
+        const piece = chunk.trim();
+        if (!piece) return;
+        if (current && (current + ' ' + piece).length > maxLen) {
+            messages.push(current);
+            current = piece;
+        } else {
+            current = current ? current + ' ' + piece : piece;
+        }
+    };
+
+    for (const sentence of sentences) {
+        if (sentence.length <= maxLen) {
+            pushChunk(sentence);
+        } else {
+            // Oración muy larga: partir por comas
+            for (const clause of sentence.split(/, /)) pushChunk(clause);
+        }
+    }
+    if (current) messages.push(current);
+    return messages;
 }
 
 /** Construye un BotResponse a partir de texto plano (sin separadores). */
@@ -389,8 +446,8 @@ export async function handleUserMessage(
             }
         }
 
-        // ── Dividir en mensajes si el modelo usó ||MSG|| ──
-        const outMessages = splitMessages(finalContent);
+        // ── Dividir en mensajes si el modelo usó ||MSG||, y humanizar/recortar ──
+        const outMessages = splitMessages(finalContent).flatMap(msg => humanizeAndSplit(msg));
 
         // Guardar en historial el texto unificado (sin separadores)
         const textForHistory = outMessages.join(' ');

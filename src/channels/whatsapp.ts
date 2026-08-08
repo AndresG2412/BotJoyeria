@@ -155,7 +155,7 @@ export async function initializeWhatsAppClient() {
 // ─────────────────────────────────────────────────────────────────────────────
 //  Arrancar una instancia específica
 // ─────────────────────────────────────────────────────────────────────────────
-export async function startBotInstance(storeId: string) {
+export async function startBotInstance(storeId: string, isRetry = false) {
     if (clients.has(storeId)) {
         logger.warn(`El bot para la tienda ${storeId} ya está en ejecución o iniciado.`);
         return;
@@ -316,12 +316,47 @@ export async function startBotInstance(storeId: string) {
     try {
         await client.initialize();
     } catch (err: any) {
-        if (err.message.includes('Execution context was destroyed') || err.message.includes('Session closed')) {
+        const errMsg = err.message || '';
+
+        if (errMsg.includes('Execution context was destroyed') || errMsg.includes('Session closed')) {
             logger.warn(`⚠️ [${storeId}] El bot se detuvo durante el inicio.`);
+        } else if (errMsg.includes('browser is already running') || errMsg.includes('EBUSY') || errMsg.includes('resource busy or locked')) {
+            logger.warn(`⚠️ [${storeId}] Browser bloqueado. Limpiando sesión...`);
+            try {
+                await client.destroy().catch(() => {});
+            } catch {}
+            clients.delete(storeId);
+            qrCodes.delete(storeId);
+            clientStatus.delete(storeId);
+
+            // Limpiar carpeta de sesión
+            try {
+                const fs = require('fs');
+                const path = require('path');
+                const sessionPath = path.join(process.cwd(), '.wwebjs_auth', `session-${storeId}`);
+                if (fs.existsSync(sessionPath)) {
+                    fs.rmSync(sessionPath, { recursive: true, force: true });
+                    logger.info(`🗑️ [${storeId}] Sesión anterior eliminada.`);
+                }
+            } catch (cleanErr: any) {
+                logger.error(`Error limpiando sesión [${storeId}]: ${cleanErr.message}`);
+            }
+
+            // Reintentar una sola vez
+            if (!isRetry) {
+                logger.info(`🔄 [${storeId}] Reintentando inicio tras limpieza...`);
+                await new Promise(r => setTimeout(r, 2000));
+                return startBotInstance(storeId, true);
+            } else {
+                logger.error(`❌ [${storeId}] Falló incluso tras limpieza. Reinicia el servidor manualmente.`);
+            }
+            return;
         } else {
-            logger.error(`❌ Error inicializando bot [${storeId}]: ${err.message}`);
+            logger.error(`❌ Error inicializando bot [${storeId}]: ${errMsg}`);
         }
         clients.delete(storeId);
+        qrCodes.delete(storeId);
+        clientStatus.delete(storeId);
     }
 }
 
@@ -339,10 +374,13 @@ export async function stopBotInstance(storeId: string) {
     const client = clients.get(storeId);
     if (client) {
         try {
-            await client.destroy();
+            await Promise.race([
+                client.destroy(),
+                new Promise(resolve => setTimeout(resolve, 5000))
+            ]);
             logger.info(`🛑 Bot [${storeId}] detenido y destruido.`);
         } catch (err: any) {
-            logger.error(`Error destruyendo bot [${storeId}]: ${err.message}`);
+            logger.warn(`⚠️ Error destruyendo bot [${storeId}]: ${err.message}`);
         }
     }
     clients.delete(storeId);

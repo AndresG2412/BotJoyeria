@@ -4,6 +4,7 @@ import { clearSession, getSession, setSessionAppointmentFlag, checkPendingAppoin
 import { google } from 'googleapis';
 import { logger } from '../utils/logger';
 import { sendAppointmentNotification } from '../utils/mailer';
+import { isWeekend, isHoliday, nextBusinessDay } from '../utils/holidays';
 import axios from 'axios';
 import path from 'path';
 
@@ -39,6 +40,16 @@ function summarizeProducts(products: any[], max = 5) {
         precio: p.price,
         peso: p.peso,
         descripcion: p.description,
+    }));
+}
+
+// Resumen mínimo para el modelo: solo lo necesario para presentar (nombre y precio).
+// Los detalles se piden aparte con get_product_details.
+function summarizeProductsBrief(products: any[]) {
+    return products.map(p => ({
+        id: p.id,
+        nombre: p.name || p.nombre || '',
+        precio: p.price,
     }));
 }
 
@@ -115,6 +126,7 @@ export const botTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                 'REGLAS ESTRICTAS:',
                 '- La fecha y hora deben ser acordadas o asignadas (por defecto para mañana a las 14:00 si el cliente no define, pero valida que sea en horas permitidas).',
                 '- La fecha debe ser MÍNIMO el día siguiente al de hoy.',
+                '- SOLO se agendan días hábiles: de lunes a viernes, NUNCA sábados, domingos ni días festivos.',
                 '- La hora de inicio debe ser en punto (ej: 13:00, 14:00, 15:00, 16:00, 17:00) entre la 1:00 PM (13:00) y las 5:00 PM (17:00) inclusive. NUNCA permitas minutos (como 14:30 o 15:15).',
                 '- NUNCA modifiques ni canceles citas existentes. Solo crea nuevas.',
                 '- NUNCA reveles información de citas de otros clientes ni de sus fechas.',
@@ -229,26 +241,33 @@ export async function executeTool(
     try {
         switch (name) {
 
-            // ── Buscar propiedades ──────────────────────────────────────
+            // ── Buscar piezas ──────────────────────────────────────
             case 'search_products': {
                 const products = await searchProducts(args.query, storeId);
                 if (products.length === 0) {
                     const all = await getAllProducts(storeId);
                     if (all.length > 0) {
                         return JSON.stringify({
-                            nota: 'No hay coincidencias exactas, pero aquí hay otras propiedades disponibles:',
-                            propiedades: all.slice(0, 10)
+                            nota: 'No hay coincidencias exactas, pero aquí hay otras piezas disponibles:',
+                            productos: summarizeProductsBrief(all.slice(0, 10)),
+                            instrucciones: 'Presenta SOLO el nombre y el precio de cada pieza, en una línea y sin listas. NUNCA menciones detalles, peso, stock ni características. Si el cliente pide más detalles, usa get_product_details. Si pide foto, usa send_product_image.'
                         });
                     }
-                    return JSON.stringify({ error: 'No se encontraron propiedades en el catálogo.' });
+                    return JSON.stringify({ error: 'No se encontraron piezas en el catálogo.' });
                 }
-                return JSON.stringify(products);
+                return JSON.stringify({
+                    productos: summarizeProductsBrief(products),
+                    instrucciones: 'Presenta SOLO el nombre y el precio de cada pieza, en una línea y sin listas. NUNCA menciones detalles, peso, stock ni características. Si el cliente pide más detalles, usa get_product_details. Si pide foto, usa send_product_image.'
+                });
             }
 
             // ── Listar todas ────────────────────────────────────────────
             case 'list_all_products': {
                 const all = await getAllProducts(storeId);
-                return JSON.stringify(all);
+                return JSON.stringify({
+                    productos: summarizeProductsBrief(all),
+                    instrucciones: 'Presenta máximo 3 piezas a la vez, SOLO con nombre y precio, en una línea y sin listas. NUNCA menciones detalles, peso, stock ni características. Si el cliente pide más detalles de una, usa get_product_details. Si pide foto, usa send_product_image.'
+                });
             }
 
             // ── Detalle de una propiedad ────────────────────────────────
@@ -479,6 +498,21 @@ export async function executeTool(
                         instructions_for_ai: 'La fecha solicitada es hoy o en el pasado. Dile al cliente que la coordinación de envío más próxima disponible es mañana y pregúntale qué día le queda bien.'
                     });
                 }
+
+                // ── Validar que el día sea hábil (lunes a viernes, sin festivos) ──
+                if (isWeekend(appointmentDate) || isHoliday(appointmentDate)) {
+                    const nextBusiness = nextBusinessDay(appointmentDate);
+                    const nextBusinessStr = `${nextBusiness.getFullYear()}-${String(nextBusiness.getMonth() + 1).padStart(2, '0')}-${String(nextBusiness.getDate()).padStart(2, '0')}`;
+                    const dayName = isWeekend(appointmentDate)
+                        ? 'fin de semana (sábado o domingo)'
+                        : 'un día festivo';
+                    return JSON.stringify({
+                        success: false,
+                        error: 'Día no hábil',
+                        instructions_for_ai: `La fecha solicitada (${date}) cae en ${dayName}. Las citas solo se agendan de lunes a viernes y no se programan en días festivos. Dile esto al cliente de forma muy amable y propónle directamente el siguiente día hábil disponible: ${nextBusinessStr}. Si el cliente quiere otro día, que elija un día entre lunes y viernes.`
+                    });
+                }
+
                 if (hour < 13 || hour > 17 || minute !== 0) {
                     return JSON.stringify({
                         success: false,

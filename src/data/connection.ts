@@ -23,16 +23,29 @@ function ensureDataDir() {
 }
 
 function loadStores(): LocalStore[] {
+    const defaultStore: LocalStore = {
+        id: "default",
+        name: "Mr. 18Kilates",
+        isActive: true,
+        systemPrompt: "Eres un asesor de joyería experto en ventas de Mr. 18Kilates.",
+    };
+
     try {
         if (fs.existsSync(storesFile)) {
             const parsed = JSON.parse(fs.readFileSync(storesFile, 'utf8'));
-            if (Array.isArray(parsed)) return parsed;
+            if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+            // Si el array existe pero está vacío, restaurar la tienda por defecto
+            if (Array.isArray(parsed) && parsed.length === 0) {
+                saveStores([defaultStore]);
+                return [defaultStore];
+            }
         }
     } catch {
         // Si el archivo local se corrompe, arrancamos con la tienda base.
     }
 
-    return [{ id: "default", name: "Mi Tienda", isActive: true, systemPrompt: "" }];
+    saveStores([defaultStore]);
+    return [defaultStore];
 }
 
 function saveStores(stores: LocalStore[]) {
