@@ -28,3 +28,23 @@ test-models.mjs
 # Credentials
 google-service-account.json
 firebase-key.json
+
+# Environment and local configuration
+.env.*
+!.env.example
+.claude/
+.vscode/
+.idea/
+.vercel/
+
+# Generated analysis/build artifacts
+graphify-out/
+coverage/
+.cache/
+
+# Private key/certificate files
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt

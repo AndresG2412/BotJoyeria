@@ -1,12 +1,12 @@
 # Bot de Joyeria - Mr. 18Kilates
 
-Bot conversacional con IA para atencion al cliente via WhatsApp, Telegram y panel web.
+Bot conversacional con IA para atencion al cliente via WhatsApp Cloud API oficial, Telegram y panel web.
 
 ## Requisitos
 
 - **Node.js** >= 18
 - **PostgreSQL** (Supabase recomendado)
-- **Cuenta de OpenAI** con API Key
+- **Google AI Studio** o proveedor compatible con la API de OpenAI
 - **Cuenta de Meta Developer** (para WhatsApp Cloud API)
 - **Cuenta de Resend** (para notificaciones por email, opcional)
 - **Google Cloud** con Calendar API habilitada (opcional, para agendar citas)
@@ -26,7 +26,7 @@ npm install
 copy .env.example .env
 # Editar .env con tus credenciales reales
 
-# 4. Ejecutar migraciones de base de datos
+# 4. Ejecutar migraciones de base de datos, si aplica
 npx ts-node migrate.ts
 
 # 5. Compilar
@@ -44,13 +44,18 @@ Copia `.env.example` a `.env` y completa **todas** las variables marcadas como R
 
 | Variable | Descripcion |
 |---|---|
-| `OPENAI_API_KEY` | API Key de OpenAI (GPT-4o-mini) |
+| `OPENAI_API_KEY` | API key del proveedor compatible configurado en `OPENAI_BASE_URL` |
+| `OPENAI_BASE_URL` | URL compatible con la API de OpenAI, por ejemplo Google AI Studio |
 | `SUPABASE_URL` | URL de tu proyecto en Supabase |
 | `SUPABASE_ANON_KEY` | Clave anon/publica de Supabase |
 | `SUPABASE_SERVICE_ROLE_KEY` | (Recomendado) Service role key |
 | `DATABASE_URL` | String de conexion PostgreSQL para migraciones |
 | `META_ACCESS_TOKEN` | Token de WhatsApp Cloud API |
 | `META_PHONE_ID` | Phone Number ID de WhatsApp |
+| `META_WABA_ID` | WhatsApp Business Account ID |
+| `META_APP_SECRET` | App Secret para validar la firma del webhook |
+| `META_VERIFY_TOKEN` | Token elegido para verificar el webhook en Meta |
+| `META_API_VERSION` | Version de Graph API usada por el proyecto |
 | `RESEND_API_KEY` | (Opcional) API Key de Resend para emails |
 | `STORE_NAME` | Nombre de la tienda (ej: "Mr. 18Kilates") |
 | `DASHBOARD_USER` / `DASHBOARD_PASSWORD` | Credenciales del panel de control |
@@ -79,7 +84,7 @@ src/
     tools.ts          # Tools/Functions disponibles para el LLM
   channels/
     telegram.ts       # Integracion Telegram
-    whatsapp.ts       # Integracion WhatsApp Web + Cloud API
+    whatsapp-cloud.ts # Integracion oficial WhatsApp Cloud API y webhook
   config/
     env.ts            # Carga y validacion de .env
     supabase.ts       # Cliente de Supabase
@@ -105,12 +110,14 @@ public/
 npm run dev     # Inicia con ts-node (hot reload manual)
 ```
 
-Para desarrollo con WhatsApp, necesitas exponer tu puerto local. Usa ngrok:
+Para desarrollo con WhatsApp Cloud API, necesitas exponer tu puerto local. Usa un dominio HTTPS de ngrok:
 
 ```bash
-ngrok http 3000
-# Configura la URL de ngrok como webhook en Meta Developer
+ngrok http --url=https://tu-dominio.ngrok-free.dev 3000
+# Configura https://tu-dominio.ngrok-free.dev/webhook/whatsapp como webhook en Meta
 ```
+
+El servidor no usa QR, WhatsApp Web ni Puppeteer. Meta entrega los mensajes al webhook y el bot responde mediante Graph API.
 
 ## Despliegue en VPS Windows
 
@@ -124,7 +131,7 @@ iniciar_bot_vps_windows.bat   # Instala, compila e inicia el bot
 - OpenAI API (GPT-4o-mini)
 - Supabase (PostgreSQL + Storage)
 - Drizzle ORM
-- WhatsApp Web.js + WhatsApp Cloud API
+- WhatsApp Cloud API oficial
 - Telegram Bot API
 - Google Calendar API
 - Resend (emails)

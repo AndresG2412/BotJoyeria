@@ -8,7 +8,7 @@ import path from 'path';
 import {
     getBotStatus, startBotInstance, stopBotInstance,
     sendWhatsAppMessage, pauseChat, resumeChat, processUnansweredMessage
-} from '../channels/whatsapp';
+} from '../channels/whatsapp-cloud';
 import OpenAI from 'openai';
 // LEGACY Cloudinary: la subida de imágenes ahora usa Supabase Storage (ver /api/upload-images)
 // import { v2 as cloudinary } from 'cloudinary';

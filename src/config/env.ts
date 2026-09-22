@@ -15,7 +15,10 @@ export const config = {
     DASHBOARD_PASSWORD: process.env.DASHBOARD_PASSWORD || 'admin123',
     META_ACCESS_TOKEN: process.env.META_ACCESS_TOKEN || '',
     META_PHONE_ID: process.env.META_PHONE_ID || '',
-    META_VERIFY_TOKEN: process.env.META_VERIFY_TOKEN || 'mi_token_secreto_ecommerce',
+    META_WABA_ID: process.env.META_WABA_ID || '',
+    META_APP_SECRET: process.env.META_APP_SECRET || '',
+    META_VERIFY_TOKEN: process.env.META_VERIFY_TOKEN || '',
+    META_API_VERSION: process.env.META_API_VERSION || 'v26.0',
     NGROK_AUTHTOKEN: process.env.NGROK_AUTHTOKEN || '',
     NGROK_DOMAIN: process.env.NGROK_DOMAIN || '',
     JWT_SECRET: process.env.JWT_SECRET || 'super-secreto-ai-bot-99',
@@ -37,4 +40,13 @@ if (!config.OPENAI_API_KEY) {
 }
 if (!config.META_ACCESS_TOKEN) {
     console.warn("⚠️ ADVERTENCIA: No se ha configurado META_ACCESS_TOKEN para la WhatsApp Cloud API.");
+}
+if (!config.META_PHONE_ID) {
+    console.warn("⚠️ ADVERTENCIA: No se ha configurado META_PHONE_ID para la WhatsApp Cloud API.");
+}
+if (!config.META_APP_SECRET) {
+    console.warn("⚠️ ADVERTENCIA: No se ha configurado META_APP_SECRET para validar el webhook de WhatsApp.");
+}
+if (!config.META_VERIFY_TOKEN) {
+    console.warn("⚠️ ADVERTENCIA: No se ha configurado META_VERIFY_TOKEN para verificar el webhook de WhatsApp.");
 }

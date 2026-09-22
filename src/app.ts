@@ -7,9 +7,8 @@ import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
 import { config } from './config/env';
 import { logger } from './utils/logger';
-import { whatsappRouter, initializeWhatsAppClient, sendWhatsAppMessage, stopBotInstance } from './channels/whatsapp';
+import { whatsappRouter, initializeWhatsAppCloud } from './channels/whatsapp-cloud';
 import { initializeTelegramClients, stopTelegramBot } from './channels/telegram';
-import { startRemarketingCron } from './bot/remarketing';
 import { dashboardRouter } from './routes/dashboard';
 import path from 'path';
 import { eq } from 'drizzle-orm';
@@ -29,7 +28,13 @@ function bootstrap() {
         contentSecurityPolicy: false,
     }));
 
-    app.use(express.json({ limit: '25mb' }));
+    app.use(express.json({
+        limit: '25mb',
+        verify: (req, _res, buf) => {
+            // Meta firma el cuerpo exacto de la petición, antes de parsearlo como JSON.
+            (req as any).rawBody = Buffer.from(buf);
+        },
+    }));
     app.use(express.urlencoded({ limit: '25mb', extended: true }));
     app.use(cookieParser());
     app.use(cors());
@@ -139,12 +144,9 @@ function bootstrap() {
         logger.info(`Accede al panel en: http://localhost:${config.PORT}/dashboard`);
     });
 
-    // INICIAR EL CLIENTE DE WHATSAPP WEB (CÓDIGO QR)
-    initializeWhatsAppClient();
+    // La integración oficial no inicia navegador ni requiere QR.
+    initializeWhatsAppCloud();
     initializeTelegramClients();
-
-    // INICIAR EL MOTOR DE REMARKETING (Carritos abandonados)
-    // startRemarketingCron((storeId, to, msg) => sendWhatsAppMessage(storeId, to, msg));
 
     // Manejar cierres inesperados (Graceful Shutdown)
     const shutdown = async () => {
@@ -153,12 +155,9 @@ function bootstrap() {
         try {
             const allStores = await db.query.stores.findMany({ where: eq(stores.isActive, true) });
             for (const s of allStores) {
-                await stopBotInstance(s.id);
                 stopTelegramBot(s.id);
             }
-            // NOTA: drizzle no expone un end() global en node-postgres,
-            // pero cerramos los bots para limpiar Puppeteer.
-            logger.info('✅ Todos los navegadores de WhatsApp cerrados correctamente.');
+            logger.info('✅ Clientes de Telegram detenidos. WhatsApp Cloud API no mantiene procesos locales.');
         } catch (error) {
             logger.error('Error durante el cierre:', error);
         }
