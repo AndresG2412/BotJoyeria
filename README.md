@@ -60,6 +60,31 @@ Copia `.env.example` a `.env` y completa **todas** las variables marcadas como R
 | `STORE_NAME` | Nombre de la tienda (ej: "Mr. 18Kilates") |
 | `DASHBOARD_USER` / `DASHBOARD_PASSWORD` | Credenciales del panel de control |
 
+### Comportamiento del bot en WhatsApp (opcional)
+
+| Variable | Default | Descripcion |
+|---|---|---|
+| `WHATSAPP_BATCH_QUIET_MS` | `3000` | Silencio a esperar tras el ultimo mensaje del cliente antes de responder |
+| `WHATSAPP_BATCH_MAX_WAIT_MS` | `10000` | Espera maxima desde el primer mensaje agrupado |
+| `BOT_MAX_CONCURRENT_CONVERSATIONS` | `5` | Conversaciones procesandose con la IA al mismo tiempo |
+| `BOT_MAX_TEXT_MESSAGES` | `3` | Maximo de mensajes de texto por respuesta |
+| `BOT_MAX_IMAGES` | `3` | Maximo de imagenes por respuesta |
+
+Los mensajes consecutivos de un cliente se agrupan y se envian juntos a la IA. Cada conversacion
+(tienda + numero del negocio + cliente) tiene su propia cola: los mensajes de un mismo cliente se
+procesan en orden y clientes distintos se atienden en paralelo.
+
+### Salud de WhatsApp Cloud API
+
+- `GET /dashboard/api/whatsapp/health/:storeId` (requiere login): estado (`OPERATIVA`,
+  `CONFIGURACION_INCOMPLETA` o `ERROR`), numero, variables faltantes, ultimo webhook, ultimo
+  mensaje enviado, ultima respuesta de Graph API y ultimo error (incluye fallos de entrega que
+  Meta reporta por webhook). Los registros viven en memoria y se reinician con el servidor.
+- `GET /health` (publico): solo indica que el proceso esta vivo.
+
+Las imagenes del catalogo se guardan en WebP; como WhatsApp solo acepta JPEG/PNG en mensajes de
+imagen, el bot las convierte a JPEG al enviarlas.
+
 ### Google Calendar (opcional)
 
 1. Ve a [Google Cloud Console](https://console.cloud.google.com)
@@ -119,11 +144,10 @@ ngrok http --url=https://tu-dominio.ngrok-free.dev 3000
 
 El servidor no usa QR, WhatsApp Web ni Puppeteer. Meta entrega los mensajes al webhook y el bot responde mediante Graph API.
 
-## Despliegue en VPS Windows
+## Despliegue en VPS
 
-```bash
-iniciar_bot_vps_windows.bat   # Instala, compila e inicia el bot
-```
+Ver la guia paso a paso en [DEPLOY.md](DEPLOY.md) (PM2, URL fija para el webhook, pruebas y
+solucion de problemas).
 
 ## Tecnologias
 
