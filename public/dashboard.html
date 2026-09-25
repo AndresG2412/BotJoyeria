@@ -9,7 +9,6 @@
     <link rel="stylesheet" href="styles.css">
     <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css">
     <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
     <style>
         @keyframes spin { from { transform: rotate(0) } to { transform: rotate(360deg) } }
         .uploading-preview {
@@ -1040,15 +1039,16 @@
             card.innerHTML = `
                 <div class="bot-header">
                     <span class="bot-name">${escapeHTML(s.name)}</span>
-                    <span class="bot-status-pill status-disconnected" id="status-${s.id}">CARGANDO...</span>
+                    <span class="bot-status-pill status-warning" id="status-${s.id}">CARGANDO...</span>
                 </div>
-                <div id="qr-area-${s.id}" class="qr-container" style="display:none;">
-                    <canvas id="qr-canvas-${s.id}"></canvas>
-                    <p class="qr-placeholder" style="margin-top:10px;">Escanea con WhatsApp</p>
-                </div>
-                <div id="connected-area-${s.id}" style="display:none;text-align:center;padding:20px;">
-                    <i class="ph ph-check-circle" style="font-size:48px;color:var(--brand);"></i>
-                    <p style="margin-top:10px;font-weight:600;">Bot Conectado</p>
+                <div class="wa-health">
+                    <div class="wa-health-title"><i class="ph ph-whatsapp-logo"></i> WhatsApp Cloud API</div>
+                    <div class="wa-health-row"><span>Número</span><strong id="wa-phone-${s.id}">—</strong></div>
+                    <div class="wa-health-row"><span>Último webhook recibido</span><strong id="wa-webhook-${s.id}">—</strong></div>
+                    <div class="wa-health-row"><span>Último mensaje enviado</span><strong id="wa-sent-${s.id}">—</strong></div>
+                    <div class="wa-health-note" id="wa-missing-${s.id}" style="display:none;"></div>
+                    <div class="wa-health-error" id="wa-error-${s.id}" style="display:none;"></div>
+                    <div class="wa-health-since" id="wa-since-${s.id}"></div>
                 </div>
                 <div style="display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,0.03);">
                     <i class="ph ph-calendar-check" style="font-size:18px;color:var(--brand);margin-top:1px;"></i>
@@ -1059,78 +1059,68 @@
                         </div>
                     </div>
                 </div>
-                <div id="start-btn-area-${s.id}" style="margin-top:auto;margin-bottom:10px;">
-                    <button class="btn-primary" style="width:100%;justify-content:center;" onclick="startBot('${s.id}')">Iniciar Bot / Conectar</button>
-                </div>
-                <div style="display:flex;gap:10px;">
+                <div style="display:flex;gap:10px;margin-top:auto;">
                     <button class="btn-sm" style="flex:1;justify-content:center;" onclick="editStore('${s.id}')"><i class="ph ph-pencil-simple"></i> Configurar Citas</button>
                     <button class="btn-sm danger" style="flex:1;justify-content:center;" onclick="deleteStore('${s.id}','${escapeHTML(s.name)}')"><i class="ph ph-trash"></i> Eliminar</button>
                 </div>`;
             grid.appendChild(card);
             updateBotStatus(s.id);
+            startHealthPolling(s.id);
         });
     }
 
     async function updateBotStatus(storeId) {
-        const res = await safeFetch(`/dashboard/api/bots/status/${storeId}`);
-        if (!res || !res.ok) return;
-        const data = await res.json();
-        const statusPill   = document.getElementById(`status-${storeId}`);
-        const qrArea       = document.getElementById(`qr-area-${storeId}`);
-        const connArea     = document.getElementById(`connected-area-${storeId}`);
-        const startBtnArea = document.getElementById(`start-btn-area-${storeId}`);
+        const res = await safeFetch(`/dashboard/api/whatsapp/health/${storeId}`);
+        const statusPill = document.getElementById(`status-${storeId}`);
         if (!statusPill) return;
+        if (!res || !res.ok) {
+            statusPill.textContent = 'SIN DATOS';
+            statusPill.className = 'bot-status-pill status-warning';
+            return;
+        }
+        const data = await res.json();
 
-        if (data.status === 'CONNECTED') {
-            statusPill.textContent = 'CONECTADO';
-            statusPill.className = 'bot-status-pill status-connected';
-            qrArea.style.display = 'none'; connArea.style.display = 'block';
-            startBtnArea.innerHTML = `<button class="btn-primary danger" style="width:100%;justify-content:center;background:#ef4444;color:white;" onclick="stopBot('${storeId}')">Detener Bot / Desconectar</button>`;
-            startBtnArea.style.display = 'block';
-            if (botPollingIntervals[storeId]) { clearInterval(botPollingIntervals[storeId]); delete botPollingIntervals[storeId]; }
-        } else if (data.status === 'QR_READY' && data.qr) {
-            statusPill.textContent = 'ESPERANDO QR';
-            statusPill.className = 'bot-status-pill status-qr';
-            qrArea.style.display = 'flex'; connArea.style.display = 'none';
-            startBtnArea.innerHTML = `<button class="btn-primary danger" style="width:100%;justify-content:center;background:#ef4444;color:white;" onclick="stopBot('${storeId}')">Detener Bot / Desconectar</button>`;
-            startBtnArea.style.display = 'block';
-            QRCode.toCanvas(document.getElementById(`qr-canvas-${storeId}`), data.qr, { width: 180 });
-            startPolling(storeId);
-        } else if (data.status === 'CONNECTING') {
-            statusPill.textContent = 'CONECTANDO...';
-            statusPill.className = 'bot-status-pill status-qr';
-            qrArea.style.display = 'none'; connArea.style.display = 'none';
-            startBtnArea.innerHTML = `<button class="btn-primary danger" style="width:100%;justify-content:center;background:#ef4444;color:white;" onclick="stopBot('${storeId}')"><i class="ph ph-spinner" style="animation:spin 1s linear infinite"></i> Detener Conexión</button>`;
-            startBtnArea.style.display = 'block';
-            startPolling(storeId);
-        } else {
-            statusPill.textContent = 'DESCONECTADO';
-            statusPill.className = 'bot-status-pill status-disconnected';
-            qrArea.style.display = 'none'; connArea.style.display = 'none';
-            startBtnArea.innerHTML = `<button class="btn-primary" style="width:100%;justify-content:center;" onclick="startBot('${storeId}')">Iniciar Bot / Conectar</button>`;
-            startBtnArea.style.display = 'block';
+        // Cloud API no mantiene conexión local: el estado se deduce de config, webhooks y Graph API.
+        const pillByState = {
+            OPERATIVA:                { text: 'OPERATIVA',                cls: 'status-connected' },
+            CONFIGURACION_INCOMPLETA: { text: 'CONFIGURACIÓN INCOMPLETA', cls: 'status-warning' },
+            ERROR:                    { text: 'ERROR',                    cls: 'status-disconnected' },
+        };
+        const pill = pillByState[data.state] || pillByState.ERROR;
+        statusPill.textContent = pill.text;
+        statusPill.className = `bot-status-pill ${pill.cls}`;
+
+        const setText = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
+        const phone = data.phoneNumber ? data.phoneNumber + (data.verifiedName ? ` · ${data.verifiedName}` : '') : 'No disponible';
+        setText(`wa-phone-${storeId}`, phone);
+        setText(`wa-webhook-${storeId}`, formatHealthDate(data.lastWebhookAt));
+        setText(`wa-sent-${storeId}`, formatHealthDate(data.lastMessageSentAt));
+        setText(`wa-since-${storeId}`, `Registro desde el último reinicio del servidor (${formatHealthDate(data.trackingSince)})`);
+
+        const missingEl = document.getElementById(`wa-missing-${storeId}`);
+        if (missingEl) {
+            const missing = data.config?.missing || [];
+            missingEl.style.display = missing.length ? 'block' : 'none';
+            missingEl.textContent = missing.length ? `Faltan en el .env: ${missing.join(', ')}` : '';
+        }
+
+        const errorEl = document.getElementById(`wa-error-${storeId}`);
+        if (errorEl) {
+            errorEl.style.display = data.lastError ? 'block' : 'none';
+            errorEl.textContent = data.lastError
+                ? `Último error (${formatHealthDate(data.lastError.at)}): ${data.lastError.message}`
+                : '';
         }
     }
 
-    function startPolling(storeId) {
+    function formatHealthDate(iso) {
+        if (!iso) return 'Sin registros';
+        return new Date(iso).toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'medium' });
+    }
+
+    function startHealthPolling(storeId) {
         if (botPollingIntervals[storeId]) return;
-        botPollingIntervals[storeId] = setInterval(() => updateBotStatus(storeId), 3000);
-    }
-
-    async function startBot(storeId) {
-        const btn = document.querySelector(`#start-btn-area-${storeId} button`);
-        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ph ph-spinner" style="animation:spin 1s linear infinite"></i> Iniciando...'; }
-        await safeFetch(`/dashboard/api/bots/start/${storeId}`, { method: 'POST' });
-        updateBotStatus(storeId);
-        startPolling(storeId);
-    }
-
-    async function stopBot(storeId) {
-        const btn = document.querySelector(`#start-btn-area-${storeId} button`);
-        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ph ph-spinner" style="animation:spin 1s linear infinite"></i> Deteniendo...'; }
-        await safeFetch(`/dashboard/api/bots/stop/${storeId}`, { method: 'POST' });
-        if (botPollingIntervals[storeId]) { clearInterval(botPollingIntervals[storeId]); delete botPollingIntervals[storeId]; }
-        updateBotStatus(storeId);
+        botPollingIntervals[storeId] = setInterval(() => updateBotStatus(storeId), 30000);
     }
 
     async function deleteStore(id, name) {

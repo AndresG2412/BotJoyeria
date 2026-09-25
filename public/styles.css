@@ -485,17 +485,43 @@
 }
 .status-connected { background: var(--brand-glow); color: var(--brand); }
 .status-disconnected { background: var(--red-glow); color: var(--red); }
-.status-qr { background: rgba(245, 158, 11, 0.15); color: var(--yellow); }
-        
-.qr-container {
-    background: #fff;
-    padding: 15px;
-    border-radius: 12px;
+.status-warning { background: rgba(245, 158, 11, 0.15); color: var(--yellow); }
+
+/* Salud de WhatsApp Cloud API */
+.wa-health {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    min-height: 200px;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.03);
 }
-.qr-container canvas, .qr-container img { max-width: 100%; height: auto; }
-.qr-placeholder { color: #000; font-size: 12px; text-align: center; }
+.wa-health-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--text3);
+}
+.wa-health-title i { font-size: 16px; color: var(--brand); }
+.wa-health-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--text2);
+}
+.wa-health-row strong { font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+.wa-health-note,
+.wa-health-error {
+    font-size: 12px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    overflow-wrap: anywhere;
+}
+.wa-health-note { background: rgba(245, 158, 11, 0.12); color: var(--yellow); }
+.wa-health-error { background: var(--red-glow); color: var(--red); }
+.wa-health-since { font-size: 10px; color: var(--text3); }

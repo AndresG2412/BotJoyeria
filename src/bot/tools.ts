@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
-import { searchProducts, getProductById, getAllProducts, getProductRawImages, getProductsFiltered, getAlternativeProducts } from '../data/catalog';
+import { searchProducts, getProductById, getAllProducts, getProductRawImages } from '../data/catalog';
+import { config } from '../config/env';
 import { clearSession, getSession, setSessionAppointmentFlag, checkPendingAppointment, saveAppointment } from '../data/database';
 import { google } from 'googleapis';
 import { logger } from '../utils/logger';
@@ -31,18 +32,8 @@ function queueImage(sessionId: string, base64DataUri: string, caption?: string) 
 }
 
 // ─────────────────────────────────────────
-//  Helper: resumen breve de propiedades para el modelo
+//  Helper: resumen breve de productos para el modelo
 // ─────────────────────────────────────────
-function summarizeProducts(products: any[], max = 5) {
-    return products.slice(0, max).map(p => ({
-        id: p.id,
-        nombre: p.name,
-        precio: p.price,
-        peso: p.peso,
-        descripcion: p.description,
-    }));
-}
-
 // Resumen mínimo para el modelo: solo lo necesario para presentar (nombre y precio).
 // Los detalles se piden aparte con get_product_details.
 function summarizeProductsBrief(products: any[]) {
@@ -179,20 +170,6 @@ export const botTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     {
         type: 'function',
         function: {
-            name: 'filter_rental_properties',
-            description: '[DEPRECADO] Busca joyas de arriendo (no usar en joyería).',
-            parameters: {
-                type: 'object',
-                properties: {
-                    categoriaId: { type: 'string' }
-                },
-                required: ['categoriaId']
-            }
-        }
-    },
-    {
-        type: 'function',
-        function: {
             name: 'close_conversation',
             description: 'Cierra y reinicia la conversación. Úsalo ÚNICAMENTE cuando el cliente se despida claramente o confirme que ya no necesita más ayuda. NO lo uses si solo dice "gracias" en medio de la conversación.',
             parameters: {
@@ -204,20 +181,6 @@ export const botTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                     }
                 },
                 required: ['reason']
-            }
-        }
-    },
-    {
-        type: 'function',
-        function: {
-            name: 'filter_sale_properties',
-            description: '[DEPRECADO] Busca joyas en venta (no usar en joyería).',
-            parameters: {
-                type: 'object',
-                properties: {
-                    categoriaId: { type: 'string' }
-                },
-                required: ['categoriaId']
             }
         }
     }
@@ -277,21 +240,32 @@ export async function executeTool(
                 return JSON.stringify(product);
             }
 
-            // ── Enviar fotos de propiedad ───────────────────────────────
+            // ── Enviar fotos de una joya ────────────────────────────────
             case 'send_product_image': {
-                const images = await getProductRawImages(args.product_id, storeId);
-                if (!images || images.length === 0) {
-                    return JSON.stringify({ success: false, error: 'Esta propiedad no tiene imágenes disponibles.' });
+                const allImages = await getProductRawImages(args.product_id, storeId);
+                if (!allImages || allImages.length === 0) {
+                    return JSON.stringify({ success: false, error: 'Esta joya no tiene imágenes disponibles. Díselo al cliente con amabilidad.' });
                 }
+                const sessionKey = sessionId || senderPhone || 'default';
+                // Límite total por respuesta (cuenta imágenes ya encoladas de otras joyas en este turno).
+                const alreadyQueued = pendingImagesMap.get(sessionKey)?.length || 0;
+                const slots = Math.max(0, config.BOT_MAX_IMAGES - alreadyQueued);
+                if (slots === 0) {
+                    return JSON.stringify({
+                        success: false,
+                        error: `Ya se alcanzó el máximo de ${config.BOT_MAX_IMAGES} imágenes por respuesta.`,
+                        instructions_for_ai: 'No envíes más fotos en esta respuesta. Ofrece enviar las de esta joya en el siguiente mensaje.'
+                    });
+                }
+                const images = allImages.slice(0, slots);
                 const productInfo = await getProductById(args.product_id, storeId);
-                const baseName = productInfo ? productInfo.name : 'Propiedad';
+                const baseName = productInfo ? productInfo.name : 'Joya';
                 let sent = 0;
 
                 for (let i = 0; i < images.length; i++) {
                     const imageUrl = images[i];
-                    const caption = i === 0 ? `📸 ${baseName} (${images.length} foto${images.length > 1 ? 's' : ''})` : undefined;
+                    const caption = i === 0 ? `📸 ${baseName}` : undefined;
                     try {
-                        const sessionKey = sessionId || senderPhone || 'default';
                         if (imageUrl.startsWith('data:')) {
                             queueImage(sessionKey, imageUrl, caption);
                         } else {
@@ -309,121 +283,21 @@ export async function executeTool(
                     }
                 }
 
+                if (sent === 0) {
+                    return JSON.stringify({
+                        success: false,
+                        error: 'No se pudieron cargar las fotos de esta joya.',
+                        instructions_for_ai: 'NO digas que enviaste la foto. Dile al cliente que en este momento no pudiste cargarla y ofrécele los detalles de la pieza.'
+                    });
+                }
+
+                const remaining = allImages.length - sent;
                 return JSON.stringify({
                     success: true,
-                    message: `Se enviaron ${sent} imagen(es) de ${baseName}.`,
-                    instructions_for_ai: 'Las imágenes ya fueron enviadas. Continúa tu respuesta de texto normalmente.'
-                });
-            }
-
-            // ── Filtrar propiedades en arriendo ────────────────────────
-            case 'filter_rental_properties': {
-                const { categoriaId, ciudad, tipo_propiedad, presupuesto_max } = args as {
-                    categoriaId: string;
-                    ciudad?: string;
-                    tipo_propiedad?: string;
-                    presupuesto_max?: number;
-                };
-
-                const results = await getProductsFiltered({
-                    categoriaId,
-                    ciudad: ciudad?.trim() || undefined,
-                    tipo_propiedad: tipo_propiedad?.trim() || undefined,
-                    presupuestoMax: presupuesto_max || 0,
-                });
-
-                if (results.length > 0) {
-                    return JSON.stringify({
-                        encontradas: results.length,
-                        propiedades: summarizeProducts(results),
-                        instrucciones: 'Presenta al cliente máximo 3 opciones de forma breve y vendedora. Para cada una menciona nombre/referencia, ciudad, tipo, precio mensual y 1 o 2 características que la hagan atractiva. Ofrece enviar fotos con send_product_image. Si le interesa visitar alguna, sigue el FLUJO CITA. Cierra siempre invitando a dar el siguiente paso.'
-                    });
-                }
-
-                // ── Sin match exacto: buscar alternativas para hacer cross-sell ──
-                const alt = await getAlternativeProducts({
-                    categoriaId,
-                    ciudad: ciudad?.trim() || undefined,
-                    tipo_propiedad: tipo_propiedad?.trim() || undefined,
-                });
-
-                // Hay propiedades en la ciudad pero el tipo/presupuesto no coincidió
-                if (alt.porCiudad.length > 0) {
-                    return JSON.stringify({
-                        encontradas: 0,
-                        alternativas: summarizeProducts(alt.porCiudad),
-                        instrucciones: `No hay arriendo exacto del tipo "${tipo_propiedad || ''}" o presupuesto pedido en ${ciudad || 'esa ciudad'}, pero SÍ hay otras opciones en ${ciudad}. Preséntalas como alternativa atractiva (máximo 3) y pregunta si le interesa alguna. NO ofrezcas avisar después: vende lo que hay ahora.`
-                    });
-                }
-
-                // No hay en esa ciudad, pero sí en otras → cross-sell de ciudad
-                if (alt.enCategoria.length > 0) {
-                    return JSON.stringify({
-                        encontradas: 0,
-                        ciudades_disponibles: alt.ciudadesDisponibles,
-                        alternativas: summarizeProducts(alt.enCategoria),
-                        instrucciones: `Por ahora no hay arriendo en ${ciudad || 'esa ciudad'}. NO digas que avisarás luego (esa función no existe). En su lugar, dile con naturalidad que sí tienes disponibles en ${alt.ciudadesDisponibles.join(', ')} y ofrécele esas opciones (máximo 3) por si le sirven. Sé un buen vendedor: muestra lo disponible y abre la puerta a una visita.`
-                    });
-                }
-
-                // Catálogo de arriendo realmente vacío
-                return JSON.stringify({
-                    encontradas: 0,
-                    instrucciones: 'No hay ninguna propiedad en arriendo cargada en el catálogo en este momento. Dile al cliente de forma honesta y amable que ahora mismo no tienes arriendos disponibles, e invítalo a contarte si también consideraría comprar, donde sí hay opciones.'
-                });
-            }
-
-            // ── Filtrar propiedades en venta ────────────────────────────
-            case 'filter_sale_properties': {
-                const { categoriaId, ciudad, tipo_propiedad, presupuesto_max } = args as {
-                    categoriaId: string;
-                    ciudad?: string;
-                    tipo_propiedad?: string;
-                    presupuesto_max?: number;
-                };
-
-                const results = await getProductsFiltered({
-                    categoriaId,
-                    ciudad: ciudad?.trim() || undefined,
-                    tipo_propiedad: tipo_propiedad?.trim() || undefined,
-                    presupuestoMax: presupuesto_max || 0,
-                });
-
-                if (results.length > 0) {
-                    return JSON.stringify({
-                        encontradas: results.length,
-                        propiedades: summarizeProducts(results),
-                        instrucciones: 'Presenta al cliente máximo 3 opciones de forma breve y vendedora. Para cada una menciona nombre/referencia, ciudad, tipo, precio de venta y 1 o 2 características atractivas. Ofrece enviar fotos con send_product_image. Si le interesa visitar alguna, inicia el FLUJO CITA. Cierra invitando a agendar la visita.'
-                    });
-                }
-
-                // ── Sin match exacto: alternativas para cross-sell ──
-                const alt = await getAlternativeProducts({
-                    categoriaId,
-                    ciudad: ciudad?.trim() || undefined,
-                    tipo_propiedad: tipo_propiedad?.trim() || undefined,
-                });
-
-                if (alt.porCiudad.length > 0) {
-                    return JSON.stringify({
-                        encontradas: 0,
-                        alternativas: summarizeProducts(alt.porCiudad),
-                        instrucciones: `No hay venta exacta del tipo "${tipo_propiedad || ''}" o presupuesto pedido en ${ciudad || 'esa ciudad'}, pero SÍ hay otras opciones en ${ciudad}. Preséntalas como alternativa (máximo 3) y pregunta si le interesa alguna. NO ofrezcas avisar después: vende lo que hay.`
-                    });
-                }
-
-                if (alt.enCategoria.length > 0) {
-                    return JSON.stringify({
-                        encontradas: 0,
-                        ciudades_disponibles: alt.ciudadesDisponibles,
-                        alternativas: summarizeProducts(alt.enCategoria),
-                        instrucciones: `Por ahora no hay venta en ${ciudad || 'esa ciudad'} con esos criterios. NO digas que avisarás luego (esa función no existe). En su lugar, dile que sí tienes disponibles en ${alt.ciudadesDisponibles.join(', ')} y ofrécele esas opciones (máximo 3). Sé buen vendedor: muestra lo disponible y propón una visita.`
-                    });
-                }
-
-                return JSON.stringify({
-                    encontradas: 0,
-                    instrucciones: 'No hay propiedades de esa categoría cargadas en el catálogo en este momento. Dile al cliente de forma honesta y amable, y ofrécele explorar otra categoría o tipo de propiedad disponible.'
+                    message: `Se enviarán ${sent} imagen(es) de ${baseName} junto con tu respuesta.`,
+                    instructions_for_ai: remaining > 0
+                        ? `Las fotos principales se envían con tu respuesta. Hay ${remaining} foto(s) más de esta joya: ofrécelas solo si el cliente quiere ver más. Continúa tu respuesta de texto normalmente.`
+                        : 'Las fotos se envían con tu respuesta. Continúa tu respuesta de texto normalmente.'
                 });
             }
 
