@@ -130,6 +130,12 @@ function bootstrap() {
         res.json({ success: true });
     });
 
+    // Salud pública mínima del proceso (para monitoreo del servidor). El detalle de
+    // WhatsApp está en /dashboard/api/whatsapp/health/:storeId, protegido por login.
+    app.get('/health', (_req, res) => {
+        res.json({ status: 'ok', uptimeSeconds: Math.round(process.uptime()) });
+    });
+
     // Rutear las peticiones de WhatsApp (Webhooks suelen ser públicos o validados internamente)
     app.use('/webhook/whatsapp', whatsappRouter);
 

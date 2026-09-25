@@ -8,9 +8,15 @@ import { SECURITY_PROMPT } from './prompts';
 import { db } from '../data/connection';
 import { stores } from '../data/schema';
 import { eq } from 'drizzle-orm';
+import { createLimiter } from '../utils/limiter';
 
 const MAX_HISTORY_LENGTH  = 15;
 const INACTIVITY_TIMEOUT_MS = 12 * 60 * 60 * 1000; // 12 horas
+const MAX_TOOL_ROUNDS = 5;           // Evita bucles infinitos de tool calls
+const MODEL_TIMEOUT_MS = 30 * 1000;  // Si un modelo no responde, pasar al siguiente de la cascada
+
+// Conversaciones procesándose con la IA al mismo tiempo (todas las tiendas y canales).
+const aiLimiter = createLimiter(config.BOT_MAX_CONCURRENT_CONVERSATIONS);
 
 // ─────────────────────────────────────────
 //  Cascadas de modelos
@@ -39,7 +45,9 @@ async function createWithCascade(
     for (const entry of cascade) {
         for (const apiKey of apiKeys) {
             try {
-                const openai = new OpenAI({ apiKey, baseURL });
+                // Sin reintentos internos del SDK: la cascada ya prueba otra key/modelo.
+                // Con los reintentos por defecto cada HTTP 503 tardaba hasta ~1 minuto en caer.
+                const openai = new OpenAI({ apiKey, baseURL, maxRetries: 0, timeout: MODEL_TIMEOUT_MS });
                 const callParams: any = { ...params, model: entry.id };
                 if (!entry.tools) {
                     delete callParams.tools;
@@ -53,8 +61,9 @@ async function createWithCascade(
             } catch (err: any) {
                 lastError = err;
                 const status = err.status ?? err.statusCode;
-                if ([400, 404, 429, 500, 503].includes(status)) {
-                    logger.warn(`Cascada: ${entry.id} [key ...${apiKey.slice(-4)}] → HTTP ${status}, probando siguiente...`);
+                const isTimeout = err instanceof OpenAI.APIConnectionTimeoutError;
+                if (isTimeout || [400, 404, 429, 500, 502, 503, 504].includes(status)) {
+                    logger.warn(`Cascada: ${entry.id} [key ...${apiKey.slice(-4)}] → ${isTimeout ? 'timeout' : `HTTP ${status}`}, probando siguiente...`);
                     continue;
                 }
                 throw err;
@@ -148,7 +157,7 @@ function splitMessages(content: string): string[] {
  * 2) Si el mensaje resultante queda largo, lo parte en varios mensajes cortos
  *    por límites de oración, de forma que cada uno se envía por separado.
  */
-export function humanizeAndSplit(content: string, maxLen = 180): string[] {
+export function humanizeAndSplit(content: string, maxLen = 600): string[] {
     // 1. Quitar markdown: negritas y asteriscos (en WhatsApp no se renderizan)
     let text = content
         .replace(/\*\*([^*]+)\*\*/g, '$1')
@@ -199,6 +208,15 @@ export function humanizeAndSplit(content: string, maxLen = 180): string[] {
     return messages;
 }
 
+/**
+ * Limita la cantidad de mensajes por respuesta sin perder contenido:
+ * lo que sobra se une al último mensaje permitido.
+ */
+function capMessages(messages: string[], max: number): string[] {
+    if (messages.length <= max) return messages;
+    return [...messages.slice(0, max - 1), messages.slice(max - 1).join('\n\n')];
+}
+
 /** Construye un BotResponse a partir de texto plano (sin separadores). */
 function singleResponse(text: string, images: PendingImage[] = []): BotResponse {
     return { text, messages: [text], images };
@@ -212,7 +230,31 @@ export type BotResponse = { text: string; messages: string[]; images: PendingIma
 // ─────────────────────────────────────────
 //  Handler principal
 // ─────────────────────────────────────────
-export async function handleUserMessage(
+
+/**
+ * Punto de entrada de los canales. Pasa por el limitador global para no saturar
+ * el servidor ni la cuota del proveedor de IA cuando escriben muchos clientes a la vez.
+ */
+export function handleUserMessage(
+    sessionId: string,
+    storeId: string,
+    senderPhone: string,
+    userText: string,
+    systemPrompt: string,
+    customApiKey: string | null,
+    media?: { mimetype: string; data: string }
+): Promise<BotResponse> {
+    return aiLimiter(async () => {
+        try {
+            return await processUserMessage(sessionId, storeId, senderPhone, userText, systemPrompt, customApiKey, media);
+        } finally {
+            // Si la respuesta falló a mitad de camino, no dejar imágenes huérfanas para el siguiente mensaje.
+            getPendingImages(sessionId);
+        }
+    });
+}
+
+async function processUserMessage(
     sessionId: string,
     storeId: string,
     senderPhone: string,
@@ -296,8 +338,10 @@ export async function handleUserMessage(
     const history = await getOrCreateSession(sessionId, enrichedSystemPrompt);
 
     // ── Mensaje inicial fijo — sin pasar por el modelo ──
+    // Solo si el cliente únicamente saludó; si ya preguntó algo ("Hola\nBusco un anillo"),
+    // el modelo responde directamente a su consulta.
     const isNewSession = history.length === 1 && history[0].role === 'system';
-    if (isNewSession) {
+    if (isNewSession && (!userText.trim() || isGreeting(userText))) {
         const welcomeMsg = 'Hola, soy Mr. 18Kilates. Cuéntame en que te ayudo, ¿ya tienes en mente la joya que buscas, estás explorando opciones o te gustaría que diseñemos una pieza única desde cero?';
         history.push({ role: 'user',      content: userText || 'Hola' });
         history.push({ role: 'assistant', content: welcomeMsg });
@@ -354,7 +398,12 @@ export async function handleUserMessage(
         let responseMessage = aiResponse.choices[0].message;
 
         // ── Bucle de tool calls ──
+        let toolRounds = 0;
         while (usedTools && responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
+            if (++toolRounds > MAX_TOOL_ROUNDS) {
+                logger.warn(`Sesión ${sessionId}: se alcanzó el máximo de ${MAX_TOOL_ROUNDS} rondas de herramientas.`);
+                break;
+            }
             history.push(responseMessage);
 
             for (const toolCall of responseMessage.tool_calls) {
@@ -446,8 +495,12 @@ export async function handleUserMessage(
             }
         }
 
-        // ── Dividir en mensajes si el modelo usó ||MSG||, y humanizar/recortar ──
-        const outMessages = splitMessages(finalContent).flatMap(msg => humanizeAndSplit(msg));
+        // ── Dividir en mensajes si el modelo usó ||MSG||, humanizar y limitar la cantidad ──
+        const outMessages = capMessages(
+            splitMessages(finalContent).flatMap(msg => humanizeAndSplit(msg)),
+            config.BOT_MAX_TEXT_MESSAGES,
+        );
+        if (outMessages.length === 0) outMessages.push('Hubo un error de procesamiento.');
 
         // Guardar en historial el texto unificado (sin separadores)
         const textForHistory = outMessages.join(' ');
@@ -459,7 +512,8 @@ export async function handleUserMessage(
 
         await saveMemory(sessionId, storeId, senderPhone, finalHistory);
 
-        return { text: outMessages[0], messages: outMessages, images: getPendingImages(sessionId) };
+        const images = getPendingImages(sessionId).slice(0, config.BOT_MAX_IMAGES);
+        return { text: outMessages[0], messages: outMessages, images };
 
     } catch (error: any) {
         logger.error(

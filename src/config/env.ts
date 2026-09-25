@@ -4,6 +4,12 @@ import path from 'path';
 // Cargar variables de entorno desde .env
 dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 
+/** Lee un entero positivo del entorno; si falta o es inválido usa el valor por defecto. */
+function intFromEnv(name: string, fallback: number): number {
+    const value = Number.parseInt(process.env[name] || '', 10);
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
 export const config = {
     OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
     OPENAI_API_KEY_2: process.env.OPENAI_API_KEY_2 || '',
@@ -32,6 +38,14 @@ export const config = {
     SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
     // Ruta al JSON de cuenta de servicio de Google (solo para Google Calendar)
     GOOGLE_SERVICE_ACCOUNT_PATH: process.env.GOOGLE_SERVICE_ACCOUNT_PATH || '',
+    // Agrupación de mensajes consecutivos del mismo cliente (WhatsApp)
+    WHATSAPP_BATCH_QUIET_MS: intFromEnv('WHATSAPP_BATCH_QUIET_MS', 3000),
+    WHATSAPP_BATCH_MAX_WAIT_MS: intFromEnv('WHATSAPP_BATCH_MAX_WAIT_MS', 10000),
+    // Conversaciones procesándose con la IA al mismo tiempo (protege servidor y cuota)
+    BOT_MAX_CONCURRENT_CONVERSATIONS: intFromEnv('BOT_MAX_CONCURRENT_CONVERSATIONS', 5),
+    // Límites de calidad por mensaje entrante (no son límites oficiales de Meta)
+    BOT_MAX_TEXT_MESSAGES: intFromEnv('BOT_MAX_TEXT_MESSAGES', 3),
+    BOT_MAX_IMAGES: intFromEnv('BOT_MAX_IMAGES', 3),
 };
 
 // Validación simple
