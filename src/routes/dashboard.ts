@@ -6,7 +6,7 @@ import { stores, users } from '../data/schema';
 import { eq } from 'drizzle-orm';
 import path from 'path';
 import {
-    getBotStatus, startBotInstance, stopBotInstance,
+    getStoreWhatsAppHealth,
     sendWhatsAppMessage, pauseChat, resumeChat, processUnansweredMessage
 } from '../channels/whatsapp-cloud';
 import OpenAI from 'openai';
@@ -172,11 +172,10 @@ dashboardRouter.put('/api/stores/:id', async (req: any, res: Response) => {
     }
 });
 
-/** DELETE /api/stores/:id — eliminar tienda y detener bot */
+/** DELETE /api/stores/:id — eliminar tienda */
 dashboardRouter.delete('/api/stores/:id', checkSuperAdmin, async (req: Request, res: Response) => {
     try {
         const id = req.params['id'] as string;
-        await stopBotInstance(id);
         await db.delete(stores).where(eq(stores.id, id));
         res.json({ success: true });
     } catch (e: any) {
@@ -185,37 +184,24 @@ dashboardRouter.delete('/api/stores/:id', checkSuperAdmin, async (req: Request, 
 });
 
 // ─────────────────────────────────────────
-//  BOTS — estado y control
+//  WHATSAPP CLOUD API — salud
 // ─────────────────────────────────────────
 
-/** GET /api/bots/status/:storeId */
-dashboardRouter.get('/api/bots/status/:storeId', (req: any, res: Response) => {
-    const { storeId } = req.params;
-    if (!isSuperAdmin(req) && req.user.storeId !== storeId)
-        return res.status(403).json({ error: 'Prohibido' });
-    res.json(getBotStatus(storeId));
-});
-
-/** POST /api/bots/start/:storeId */
-dashboardRouter.post('/api/bots/start/:storeId', async (req: any, res: Response) => {
+/**
+ * GET /api/whatsapp/health/:storeId
+ * Cloud API no mantiene una conexión local; este endpoint reporta variables
+ * configuradas, último webhook, última respuesta de Graph API y último error.
+ */
+dashboardRouter.get('/api/whatsapp/health/:storeId', async (req: any, res: Response) => {
     const { storeId } = req.params;
     if (!isSuperAdmin(req) && req.user.storeId !== storeId)
         return res.status(403).json({ error: 'Prohibido' });
 
-    startBotInstance(storeId).catch(err =>
-        logger.error(`Error iniciando bot ${storeId}: ${err.message}`)
-    );
-    res.json({ success: true });
-});
-
-/** POST /api/bots/stop/:storeId */
-dashboardRouter.post('/api/bots/stop/:storeId', async (req: any, res: Response) => {
-    const { storeId } = req.params;
-    if (!isSuperAdmin(req) && req.user.storeId !== storeId)
-        return res.status(403).json({ error: 'Prohibido' });
-
-    await stopBotInstance(storeId);
-    res.json({ success: true });
+    try {
+        res.json(await getStoreWhatsAppHealth(storeId));
+    } catch (e: any) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // ─────────────────────────────────────────

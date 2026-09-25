@@ -61,8 +61,9 @@ export async function initTelegramBot(storeId: string, token: string) {
                 store.openaiApiKey || null
             );
 
-            if (response) {
-                await bot.sendMessage(chatId, response.text);
+            // Antes solo se enviaba el primer mensaje y se perdía el resto de la respuesta.
+            for (const text of response?.messages || []) {
+                await bot.sendMessage(chatId, text);
             }
         } catch (error) {
             logger.error(`❌ [${storeId}] Error en Telegram:`, error);
