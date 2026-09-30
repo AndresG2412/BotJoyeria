@@ -29,6 +29,9 @@ type RawBodyRequest = Request & { rawBody?: Buffer };
 type InboundMessage = {
     id?: string;
     from?: string;
+    // Meta comenzó a enviar BSUID cuando el número del usuario no está disponible.
+    // Ejemplo: CO.1250759470573907
+    from_user_id?: string;
     type?: string;
     text?: { body?: string };
     interactive?: {
@@ -82,6 +85,25 @@ function graphUrl(path: string): string {
 
 function normalizePhone(phone: string): string {
     return phone.replace(/@c\.us$/, '').replace(/\D/g, '');
+}
+
+/** Identificador Business-Scoped User ID (BSUID) enviado por Meta. */
+function isBsuid(value: string): boolean {
+    return /^[A-Z]{2}\.[A-Za-z0-9]+$/.test(value);
+}
+
+/**
+ * Meta puede identificar al destinatario por teléfono o por BSUID.
+ * Los BSUID deben enviarse en `recipient`; los números en `to`.
+ */
+function recipientFields(identifier: string): Record<string, string> {
+    return isBsuid(identifier)
+        ? { recipient: identifier }
+        : { to: normalizePhone(identifier) };
+}
+
+function normalizeRecipientIdentifier(identifier: string): string {
+    return isBsuid(identifier) ? identifier.trim() : normalizePhone(identifier);
 }
 
 function wait(ms: number): Promise<void> {
@@ -151,7 +173,7 @@ async function sendTextMessage(store: StoreRecord | null, to: string, text: stri
     await graphPost(credentials, 'send_text', `/${credentials.phoneNumberId}/messages`, {
         messaging_product: 'whatsapp',
         recipient_type: 'individual',
-        to: normalizePhone(to),
+        ...recipientFields(to),
         type: 'text',
         text: {
             preview_url: false,
@@ -200,7 +222,7 @@ async function sendImageMessage(store: StoreRecord | null, to: string, image: Pe
     await graphPost(credentials, 'send_image', `/${credentials.phoneNumberId}/messages`, {
         messaging_product: 'whatsapp',
         recipient_type: 'individual',
-        to: normalizePhone(to),
+        ...recipientFields(to),
         type: 'image',
         image: {
             id: mediaId,
@@ -422,9 +444,18 @@ async function processInboundMessage(envelope: InboundEnvelope): Promise<void> {
     const { message, phoneNumberId } = envelope;
     if (hasProcessedMessage(message.id)) return;
 
-    const senderPhone = normalizePhone(message.from || '');
+    // Desde abril de 2026 Meta puede omitir `from` y enviar únicamente
+    // `from_user_id` (BSUID). Debemos conservarlo completo: quitarle el punto
+    // o las letras impediría responder usando `recipient`.
+    const senderPhone = message.from
+        ? normalizePhone(message.from)
+        : (message.from_user_id || '').trim();
     const userText = extractMessageText(message);
+    logger.info(`WhatsApp: mensaje entrante ${message.id || 'sin id'} de ${senderPhone || 'sin identificador'} (${message.type || 'sin tipo'})`);
     if (!senderPhone || !userText) {
+        if (userText && !senderPhone) {
+            logger.warn(`WhatsApp: mensaje sin identificador de remitente (id ${message.id || 'desconocido'})`);
+        }
         if (message.type && message.type !== 'text' && message.type !== 'interactive') {
             logger.info(`Mensaje Cloud API no textual ignorado: ${message.type}`);
         }
@@ -528,7 +559,7 @@ export async function processUnansweredMessage(sessionId: string, storeId: strin
     const store = await getStoreById(storeId);
     if (!store) return;
 
-    const conversation = buildConversation(store, getCredentials(store).phoneNumberId, normalizePhone(phone));
+    const conversation = buildConversation(store, getCredentials(store).phoneNumberId, normalizeRecipientIdentifier(phone));
     enqueueConversation(conversation, pendingTexts.filter(Boolean).join('\n') || 'Hola');
 }
 
