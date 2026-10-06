@@ -82,6 +82,23 @@ procesan en orden y clientes distintos se atienden en paralelo.
   Meta reporta por webhook). Los registros viven en memoria y se reinician con el servidor.
 - `GET /health` (publico): solo indica que el proceso esta vivo.
 
+### Contacto directo desde la web
+
+Cada producto de la tienda pública puede abrir WhatsApp con un mensaje que incluye su `id` como
+referencia. El número del negocio se configura en la propia web:
+
+```ts
+const message = `Hola, estoy interesado en el producto "${product.nombre}" (Ref: ${product.id}) que vi en la web. Por favor dame más información.`;
+const whatsappUrl = `https://wa.me/${NUMERO_DEL_NEGOCIO}?text=${encodeURIComponent(message)}`;
+```
+
+`src/utils/web-product.ts` expone `buildWebProductMessage()` con el formato exacto (y
+`parseWebProductLead()` para reconocerlo) por si se quiere reutilizar. Cuando el webhook recibe
+ese formato, valida la referencia exacta del producto y responde directamente sin pasar por la IA
+ni hacer búsquedas generales. Si el cliente confirma la pieza, el flujo normal solicita nombre,
+teléfono, fecha y hora; la cita se registra siempre en Pitalito, en Calle 4 #1-31, incluyendo el
+producto de interés.
+
 Las imagenes del catalogo se guardan en WebP; como WhatsApp solo acepta JPEG/PNG en mensajes de
 imagen, el bot las convierte a JPEG al enviarlas.
 

@@ -1,19 +1,42 @@
 import OpenAI from 'openai';
-import { searchProducts, getProductById, getAllProducts, getProductRawImages } from '../data/catalog';
+import { searchProducts, filterProducts, getProductById, getProductRawImages } from '../data/catalog';
 import { config } from '../config/env';
-import { clearSession, getSession, setSessionAppointmentFlag, checkPendingAppointment, saveAppointment } from '../data/database';
+import { clearSession, getSession, setSessionAppointmentFlag, checkPendingAppointment, getPendingAppointment, updateAppointmentSchedule, saveAppointment, getMemory } from '../data/database';
 import { google } from 'googleapis';
 import { logger } from '../utils/logger';
 import { sendAppointmentNotification } from '../utils/mailer';
 import { isWeekend, isHoliday, nextBusinessDay } from '../utils/holidays';
 import axios from 'axios';
 import path from 'path';
+import { APPOINTMENT_ADDRESS, APPOINTMENT_CITY, APPOINTMENT_DURATION_MINUTES, APPOINTMENT_HOURS, availabilityInstruction, availabilityLabel, isValidAppointmentTime } from './policies';
+import { parseWebProductLead } from '../utils/web-product';
 
 // ─────────────────────────────────────────
 //  Cola temporal de imágenes pendientes
 // ─────────────────────────────────────────
 export type PendingImage = { mimetype: string; base64: string; caption?: string };
 const pendingImagesMap = new Map<string, PendingImage[]>();
+export const MAX_PRODUCT_IMAGES_PER_RESPONSE = 1;
+
+export function limitProductImages(images: string[], alreadyQueued: number, configuredLimit: number): string[] {
+    const totalAllowed = Math.min(MAX_PRODUCT_IMAGES_PER_RESPONSE, configuredLimit);
+    const slots = Math.max(0, totalAllowed - alreadyQueued);
+    return images.slice(0, slots);
+}
+
+async function getWebLeadProductReference(sessionId: string | undefined, storeId: string): Promise<string | null> {
+    if (!sessionId) return null;
+    const history = await getMemory(sessionId);
+    for (let index = history.length - 1; index >= 0; index--) {
+        const message = history[index];
+        if (message?.role !== 'user' || typeof message.content !== 'string') continue;
+        const lead = parseWebProductLead(message.content);
+        if (!lead) continue;
+        const product = await getProductById(lead.productId, storeId);
+        return product ? `${product.name} — Ref: ${lead.productId}` : lead.productId;
+    }
+    return null;
+}
 
 export function getPendingImages(sessionId: string): PendingImage[] {
     const images = pendingImagesMap.get(sessionId) || [];
@@ -40,7 +63,8 @@ function summarizeProductsBrief(products: any[]) {
     return products.map(p => ({
         id: p.id,
         nombre: p.name || p.nombre || '',
-        precio: p.price,
+        precio: p.price > 0 ? p.price : null,
+        disponibilidad: availabilityLabel(p.stock),
     }));
 }
 
@@ -68,9 +92,22 @@ export const botTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     {
         type: 'function',
         function: {
-            name: 'list_all_products',
-            description: 'Obtiene todos los productos disponibles en el catálogo de la joyería. Úsalo cuando el cliente pregunte qué joyas hay disponibles en general.',
-            parameters: { type: 'object', properties: {}, required: [] }
+            name: 'filter_products',
+            description: 'Filtra progresivamente una sola categoría de joyas por material, piedra, color, presupuesto y disponibilidad. No muestra listas: si hay varias coincidencias devuelve solo la cantidad para que el asesor haga otra pregunta.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    categoria: { type: 'string', description: 'Categoría o tipo: anillo, cadena, pulsera, aretes, etc.' },
+                    material: { type: 'string', description: 'Material como oro 18k, oro blanco, oro amarillo o plata.' },
+                    piedra: { type: 'string', description: 'Piedra como diamante, zafiro, esmeralda o rubí.' },
+                    color_metal: { type: 'string', description: 'Color del metal si el cliente lo especifica.' },
+                    color_piedra: { type: 'string', description: 'Color de la piedra si el cliente lo especifica.' },
+                    estilo: { type: 'string', description: 'Estilo u ocasión solicitada.' },
+                    presupuesto_max: { type: 'number', description: 'Presupuesto máximo en pesos colombianos.' },
+                    disponibilidad: { type: 'string', enum: ['disponible', 'bajo_pedido', 'cualquiera'] },
+                },
+                required: ['categoria']
+            }
         }
     },
     {
@@ -112,19 +149,21 @@ export const botTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         function: {
             name: 'schedule_appointment',
             description: [
-                'Registra la venta y agenda los detalles de envío/coordinación de una joya en Google Calendar.',
-                'SOLO llama esta función cuando el cliente haya proporcionado el nombre completo, teléfono y ciudad de envío.',
+                 'Registra una cita de atención presencial en Pitalito en Google Calendar.',
+                 'SOLO llama esta función cuando el cliente haya proporcionado nombre completo, fecha y hora.',
                 'REGLAS ESTRICTAS:',
-                '- La fecha y hora deben ser acordadas o asignadas (por defecto para mañana a las 14:00 si el cliente no define, pero valida que sea en horas permitidas).',
-                '- La fecha debe ser MÍNIMO el día siguiente al de hoy.',
-                '- SOLO se agendan días hábiles: de lunes a viernes, NUNCA sábados, domingos ni días festivos.',
-                '- La hora de inicio debe ser en punto (ej: 13:00, 14:00, 15:00, 16:00, 17:00) entre la 1:00 PM (13:00) y las 5:00 PM (17:00) inclusive. NUNCA permitas minutos (como 14:30 o 15:15).',
+                 `- La cita dura ${APPOINTMENT_DURATION_MINUTES} minutos aproximadamente. La asesoría puede tardar más si el cliente aún está explorando opciones.`,
+                 '- La fecha debe ser MÍNIMO el día siguiente al de hoy.',
+                 `- SOLO se atiende presencialmente en ${APPOINTMENT_CITY}, ${APPOINTMENT_ADDRESS}. Horario: ${APPOINTMENT_HOURS}.`,
+                 '- SOLO se agendan días hábiles: de lunes a viernes, NUNCA sábados, domingos ni días festivos.',
+                 '- La hora de inicio debe ser en punto. Las franjas válidas son 08:00–12:00 y 14:00–18:00. NUNCA permitas minutos.',
                 '- NUNCA modifiques ni canceles citas existentes. Solo crea nuevas.',
                 '- NUNCA reveles información de citas de otros clientes ni de sus fechas.',
                 '',
                 'DATOS:',
-                '- Necesitas del cliente: client_name, phone y city (ciudad de envío).',
-                '- property_reference y address son la referencia/nombre de la joya elegida del catálogo. Autocomplétalos con el nombre/ID de la joya (NO se los pidas al cliente).',
+                 '- Necesitas del cliente: client_name, phone, date y time.',
+                 `- city siempre es ${APPOINTMENT_CITY}; address siempre es ${APPOINTMENT_ADDRESS}. No preguntes ciudad de envío.`,
+                 '- property_reference es el nombre/referencia de la pieza o "asesoría general".',
             ].join(' '),
             parameters: {
                 type: 'object',
@@ -133,37 +172,44 @@ export const botTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                         type: 'string',
                         description: 'Nombre completo del cliente.'
                     },
-                    city: {
-                        type: 'string',
-                        description: 'Ciudad de envío de la joya.'
-                    },
                     date: {
                         type: 'string',
                         description: 'Fecha en formato YYYY-MM-DD. Debe ser mínimo mañana.'
                     },
                     time: {
                         type: 'string',
-                        description: 'Hora en formato HH:MM (24h). Debe estar entre 13:00 y 17:00, y los minutos deben ser 00 (horas en punto).'
+                         description: 'Hora en formato HH:MM (24h). Debe estar entre 08:00 y 12:00 o entre 14:00 y 18:00, siempre en punto.'
                     },
-                    appointment_type: {
-                        type: 'string',
-                        enum: ['venta_joya'],
-                        description: 'Tipo de cita: venta_joya.'
+                     appointment_type: {
+                         type: 'string',
+                         enum: ['asesoria_presencial', 'producto_bajo_pedido'],
+                         description: 'Tipo de cita presencial.'
                     },
                     property_reference: {
                         type: 'string',
                         description: 'Referencia o nombre de la joya del catálogo a comprar.'
-                    },
-                    address: {
-                        type: 'string',
-                        description: 'Referencia o nombre de la joya (usar el mismo valor que property_reference, NO preguntar al cliente).'
                     },
                     phone: {
                         type: 'string',
                         description: 'Número de WhatsApp de 10 dígitos del cliente.'
                     }
                 },
-                required: ['client_name', 'phone', 'date', 'time', 'appointment_type', 'property_reference', 'city', 'address']
+                 required: ['client_name', 'phone', 'date', 'time', 'appointment_type']
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'reschedule_appointment',
+            description: `Reprograma la cita presencial existente del cliente actual. Úsala SOLO después de que el cliente confirme que desea reprogramar y proporcione una nueva fecha y hora válidas. Horario: ${APPOINTMENT_HOURS}.`,
+            parameters: {
+                type: 'object',
+                properties: {
+                    date: { type: 'string', description: 'Nueva fecha YYYY-MM-DD, mínimo mañana.' },
+                    time: { type: 'string', description: 'Nueva hora HH:MM en punto, entre 08:00–12:00 o 14:00–18:00.' },
+                },
+                required: ['date', 'time']
             }
         }
     },
@@ -208,28 +254,52 @@ export async function executeTool(
             case 'search_products': {
                 const products = await searchProducts(args.query, storeId);
                 if (products.length === 0) {
-                    const all = await getAllProducts(storeId);
-                    if (all.length > 0) {
-                        return JSON.stringify({
-                            nota: 'No hay coincidencias exactas, pero aquí hay otras piezas disponibles:',
-                            productos: summarizeProductsBrief(all.slice(0, 10)),
-                            instrucciones: 'Presenta SOLO el nombre y el precio de cada pieza, en una línea y sin listas. NUNCA menciones detalles, peso, stock ni características. Si el cliente pide más detalles, usa get_product_details. Si pide foto, usa send_product_image.'
-                        });
-                    }
-                    return JSON.stringify({ error: 'No se encontraron piezas en el catálogo.' });
+                    return JSON.stringify({
+                        coincidencias: 0,
+                        error: 'No se encontró una pieza con esa búsqueda.',
+                        instrucciones: 'No inventes ni muestres alternativas. Pregunta qué filtro desea cambiar o solicita una referencia más precisa.',
+                    });
                 }
                 return JSON.stringify({
-                    productos: summarizeProductsBrief(products),
-                    instrucciones: 'Presenta SOLO el nombre y el precio de cada pieza, en una línea y sin listas. NUNCA menciones detalles, peso, stock ni características. Si el cliente pide más detalles, usa get_product_details. Si pide foto, usa send_product_image.'
+                    productos: summarizeProductsBrief(products.slice(0, 1)),
+                    instrucciones: 'Presenta SOLO una pieza con nombre y precio, en una línea y sin listas. Si el stock es 0, indica que es bajo pedido y que debe separar cita o visitar personalmente para confirmar. Si pide más detalles, usa get_product_details. Si pide foto, usa send_product_image.'
                 });
             }
 
-            // ── Listar todas ────────────────────────────────────────────
-            case 'list_all_products': {
-                const all = await getAllProducts(storeId);
+            case 'filter_products': {
+                const products = await filterProducts({
+                    storeId,
+                    categoriaId: args.categoria,
+                    material: args.material,
+                    piedra: args.piedra,
+                    colorMetal: args.color_metal,
+                    colorPiedra: args.color_piedra,
+                    estilo: args.estilo,
+                    presupuestoMax: Number(args.presupuesto_max) || undefined,
+                    disponibilidad: args.disponibilidad || 'cualquiera',
+                });
+
+                if (products.length === 0) {
+                    return JSON.stringify({
+                        coincidencias: 0,
+                        instrucciones: 'No hay una pieza que cumpla todos los filtros. Pregunta qué filtro desea flexibilizar. No inventes alternativas ni muestres una lista.',
+                    });
+                }
+
+                if (products.length > 1) {
+                    return JSON.stringify({
+                        coincidencias: products.length,
+                        instrucciones: 'Hay varias coincidencias. Haz una sola pregunta para agregar o precisar un filtro antes de mostrar una pieza. No muestres nombres ni una lista.',
+                    });
+                }
+
+                const product = products[0];
                 return JSON.stringify({
-                    productos: summarizeProductsBrief(all),
-                    instrucciones: 'Presenta máximo 3 piezas a la vez, SOLO con nombre y precio, en una línea y sin listas. NUNCA menciones detalles, peso, stock ni características. Si el cliente pide más detalles de una, usa get_product_details. Si pide foto, usa send_product_image.'
+                    coincidencias: 1,
+                    producto: summarizeProductsBrief([product])[0],
+                    instrucciones: product.stock > 0
+                        ? 'Presenta solo esta pieza con nombre y precio. Si pide detalles usa get_product_details; si pide foto usa send_product_image.'
+                        : 'Presenta solo esta pieza e indica que está disponible bajo pedido y que debe separar una cita presencial para confirmar disponibilidad.',
                 });
             }
 
@@ -237,7 +307,11 @@ export async function executeTool(
             case 'get_product_details': {
                 const product = await getProductById(args.id, storeId);
                 if (!product) return JSON.stringify({ error: 'No se encontró la propiedad con ese ID.' });
-                return JSON.stringify(product);
+                return JSON.stringify({
+                    ...product,
+                    disponibilidad: availabilityLabel(product.stock),
+                    instrucciones_disponibilidad: availabilityInstruction(product.stock),
+                });
             }
 
             // ── Enviar fotos de una joya ────────────────────────────────
@@ -249,15 +323,14 @@ export async function executeTool(
                 const sessionKey = sessionId || senderPhone || 'default';
                 // Límite total por respuesta (cuenta imágenes ya encoladas de otras joyas en este turno).
                 const alreadyQueued = pendingImagesMap.get(sessionKey)?.length || 0;
-                const slots = Math.max(0, config.BOT_MAX_IMAGES - alreadyQueued);
-                if (slots === 0) {
+                const images = limitProductImages(allImages, alreadyQueued, config.BOT_MAX_IMAGES);
+                if (images.length === 0) {
                     return JSON.stringify({
                         success: false,
-                        error: `Ya se alcanzó el máximo de ${config.BOT_MAX_IMAGES} imágenes por respuesta.`,
+                        error: `Ya se alcanzó el máximo de ${MAX_PRODUCT_IMAGES_PER_RESPONSE} imagen por respuesta.`,
                         instructions_for_ai: 'No envíes más fotos en esta respuesta. Ofrece enviar las de esta joya en el siguiente mensaje.'
                     });
                 }
-                const images = allImages.slice(0, slots);
                 const productInfo = await getProductById(args.product_id, storeId);
                 const baseName = productInfo ? productInfo.name : 'Joya';
                 let sent = 0;
@@ -303,30 +376,31 @@ export async function executeTool(
 
             // ── Agendar cita en Google Calendar ────────────────────────
             case 'schedule_appointment': {
-                const { client_name, city, date, time, appointment_type, property_reference, address, phone } = args as {
+                const { client_name, date, time, appointment_type, property_reference, phone } = args as {
                     client_name: string;
-                    city: string;
                     date: string;
                     time: string;
-                    appointment_type: 'venta_joya';
+                    appointment_type: 'asesoria_presencial' | 'producto_bajo_pedido';
                     property_reference?: string;
-                    address?: string;
                     phone?: string;
                 };
 
-                const effectiveCity = city?.trim() || 'Por definir';
-                const effectiveAddress = address?.trim() || property_reference || 'Joya del catálogo';
+                const effectiveCity = APPOINTMENT_CITY;
+                const effectiveAddress = APPOINTMENT_ADDRESS;
+                const effectiveReference = property_reference?.trim()
+                    || await getWebLeadProductReference(sessionId, storeId)
+                    || 'Asesoría general';
 
                 if (
                     !client_name || !client_name.trim() ||
                     !date || !date.trim() ||
                     !time || !time.trim() ||
                     !phone || !phone.trim() ||
-                    !property_reference || !property_reference.trim()
+                    !appointment_type
                 ) {
                     return JSON.stringify({
                         success: false,
-                        instructions_for_ai: 'Faltan datos obligatorios para poder registrar la venta y coordinar el envío. Asegúrate de tener: nombre completo, teléfono de contacto de 10 dígitos, ciudad de envío, y la referencia de la joya.'
+                        instructions_for_ai: 'Faltan datos obligatorios para registrar la cita. Asegúrate de tener nombre completo, teléfono, fecha y hora.'
                     });
                 }
 
@@ -369,7 +443,7 @@ export async function executeTool(
                 if (appointmentDate < tomorrow) {
                     return JSON.stringify({
                         success: false,
-                        instructions_for_ai: 'La fecha solicitada es hoy o en el pasado. Dile al cliente que la coordinación de envío más próxima disponible es mañana y pregúntale qué día le queda bien.'
+                        instructions_for_ai: 'La fecha solicitada es hoy o en el pasado. Dile al cliente que la atención presencial más próxima disponible es mañana y pregúntale qué día le queda bien.'
                     });
                 }
 
@@ -387,10 +461,10 @@ export async function executeTool(
                     });
                 }
 
-                if (hour < 13 || hour > 17 || minute !== 0) {
+                if (!isValidAppointmentTime(time)) {
                     return JSON.stringify({
                         success: false,
-                        instructions_for_ai: 'La hora solicitada no es válida. Las citas se programan únicamente en horas exactas (13:00, 14:00, 15:00, 16:00, 17:00) y la última disponible para iniciar es a las 5:00 PM (17:00). Dile de forma amable al cliente que por favor proporcione una hora en punto (ej. 2:00 PM o 14:00) dentro de este rango.'
+                        instructions_for_ai: 'La hora solicitada no es válida. Las citas se programan de lunes a viernes, en horas exactas entre 8:00 AM y 12:00 PM o entre 2:00 PM y 6:00 PM. Dile al cliente que elija una hora en punto dentro de esas franjas.'
                     });
                 }
                 if (!adminCalendarEmail) {
@@ -413,7 +487,8 @@ export async function executeTool(
                     const calendar = google.calendar({ version: 'v3', auth });
 
                     const typeLabels: Record<string, string> = {
-                        venta_joya: 'Venta de Joya',
+                        asesoria_presencial: 'Asesoría presencial',
+                        producto_bajo_pedido: 'Producto bajo pedido',
                     };
 
                     const startTime = new Date(year, month - 1, day, hour, minute);
@@ -438,16 +513,16 @@ export async function executeTool(
                     }
 
                     // ── Crear evento si el horario está libre ──
-                    await calendar.events.insert({
+                    const createdEvent = await calendar.events.insert({
                         calendarId: adminCalendarEmail,
                         requestBody: {
                             summary: `${typeLabels[appointment_type]} (${effectiveCity}) — ${client_name}`,
                             description: [
                                 `Cliente: ${client_name}`,
-                                `Ciudad de Envío: ${effectiveCity}`,
+                                `Atención presencial: ${effectiveCity}`,
                                 phone ? `WhatsApp: ${phone}` : '',
-                                property_reference ? `Joya: ${property_reference}` : '',
-                                effectiveAddress ? `Detalles/Referencia: ${effectiveAddress}` : '',
+                                `Joya/interés: ${effectiveReference}`,
+                                `Dirección: ${effectiveAddress}`,
                                 `Tipo: ${typeLabels[appointment_type]}`,
                                 `Agendado automáticamente vía bot de WhatsApp — Mr. 18Kilates`,
                             ].filter(Boolean).join('\n'),
@@ -456,7 +531,32 @@ export async function executeTool(
                         },
                     });
 
-                    // ── Notificar al administrador por correo ──
+                    const saved = await saveAppointment(storeId, senderPhone, {
+                        clientName: client_name,
+                        city: effectiveCity,
+                        date,
+                        time,
+                        appointmentType: appointment_type,
+                        propertyReference: effectiveReference,
+                        address: effectiveAddress,
+                        phone: phone || '',
+                        calendarEventId: createdEvent.data.id || undefined,
+                        status: 'scheduled',
+                        createdAt: new Date()
+                    });
+
+                    if (!saved) {
+                        if (createdEvent.data.id) {
+                            await calendar.events.delete({ calendarId: adminCalendarEmail, eventId: createdEvent.data.id }).catch(() => undefined);
+                        }
+                        return JSON.stringify({
+                            success: false,
+                            instructions_for_ai: 'La cita no pudo guardarse correctamente. Dile al cliente que hubo un problema técnico y que un asesor lo contactará para confirmarla.'
+                        });
+                    }
+
+                    // ── Guardar flag de cita y notificar solo después de persistir ──
+                    if (sessionId) await setSessionAppointmentFlag(sessionId, true);
                     sendAppointmentNotification({
                         adminEmail: adminCalendarEmail,
                         clientName: client_name,
@@ -465,26 +565,9 @@ export async function executeTool(
                         time,
                         appointmentType: appointment_type,
                         phone,
-                        propertyReference: property_reference,
+                        propertyReference: effectiveReference,
                         address: effectiveAddress,
                     });
-
-                    // ── Guardar flag de cita agendada en la sesión y base de datos ──
-                    if (sessionId) {
-                        await setSessionAppointmentFlag(sessionId, true);
-                        await saveAppointment(storeId, senderPhone, {
-                            clientName: client_name,
-                            city: effectiveCity,
-                            date,
-                            time,
-                            appointmentType: appointment_type,
-                            propertyReference: property_reference || '',
-                            address: effectiveAddress || '',
-                            phone: phone || '',
-                            status: 'scheduled',
-                            createdAt: new Date()
-                        });
-                    }
 
                     const contactInfo = pqrEmail
                         ? `Si necesitas cambiar o cancelar, escríbenos al correo ${pqrEmail} o espera a que un asesor te contacte.`
@@ -496,7 +579,7 @@ export async function executeTool(
                         confirmed_time: time,
                         city: effectiveCity,
                         contact_info: contactInfo,
-                        instructions_for_ai: `La venta quedó registrada con éxito con destino a ${effectiveCity}. Confirma al cliente: fecha ${date}, hora ${time}, y dile: "${contactInfo}"`
+                        instructions_for_ai: `La cita presencial quedó registrada en ${effectiveCity}, ${effectiveAddress}. Confirma al cliente la fecha ${date} y hora ${time}. Explica que dura aproximadamente una hora, aunque la asesoría puede tardar más si aún está explorando opciones. ${contactInfo}`
                     });
 
                 } catch (calErr: any) {
@@ -506,8 +589,88 @@ export async function executeTool(
                     }
                     return JSON.stringify({
                         success: false,
-                        instructions_for_ai: 'Hubo un error técnico al registrar el despacho. Dile al cliente que un asesor de Mr. 18Kilates lo contactará pronto para confirmar manualmente.'
+                        instructions_for_ai: 'Hubo un error técnico al registrar la cita. Dile al cliente que un asesor de Mr. 18Kilates lo contactará pronto para confirmar manualmente.'
                     });
+                }
+            }
+
+            case 'reschedule_appointment': {
+                const pending = await getPendingAppointment(storeId, senderPhone);
+                if (!pending) {
+                    return JSON.stringify({ success: false, instructions_for_ai: 'No encontré una cita futura asociada a este número de WhatsApp. Si desea agendar, inicia el flujo de atención presencial.' });
+                }
+                if (!pending.calendarEventId) {
+                    return JSON.stringify({ success: false, instructions_for_ai: 'La cita existente no tiene identificador de calendario. Un asesor debe ayudar a reprogramarla manualmente.' });
+                }
+
+                const { date, time } = args as { date?: string; time?: string };
+                if (!date || !time || !isValidAppointmentTime(time)) {
+                    return JSON.stringify({ success: false, instructions_for_ai: 'La nueva fecha u hora no es válida. Usa un día hábil y una hora exacta entre 8:00 AM–12:00 PM o 2:00 PM–6:00 PM.' });
+                }
+
+                const [year, month, day] = date.split('-').map(Number);
+                const newDate = new Date(year, month - 1, day);
+                const tomorrow = new Date();
+                tomorrow.setDate(tomorrow.getDate() + 1);
+                tomorrow.setHours(0, 0, 0, 0);
+                if (newDate < tomorrow || isWeekend(newDate) || isHoliday(newDate)) {
+                    return JSON.stringify({ success: false, instructions_for_ai: 'La nueva fecha debe ser un día hábil posterior a hoy. Propón otra fecha de lunes a viernes.' });
+                }
+
+                if (!adminCalendarEmail) {
+                    return JSON.stringify({ success: false, instructions_for_ai: 'No hay calendario configurado. Un asesor debe confirmar la reprogramación manualmente.' });
+                }
+
+                try {
+                    const keyFilePath = process.env.GOOGLE_SERVICE_ACCOUNT_PATH
+                        ? path.resolve(process.cwd(), process.env.GOOGLE_SERVICE_ACCOUNT_PATH)
+                        : path.resolve(process.cwd(), 'google-service-account.json');
+                    const auth = new google.auth.GoogleAuth({ keyFile: keyFilePath, scopes: ['https://www.googleapis.com/auth/calendar'] });
+                    const calendar = google.calendar({ version: 'v3', auth });
+                    const startTime = new Date(year, month - 1, day, Number(time.split(':')[0]), 0);
+                    const endTime = new Date(startTime.getTime() + APPOINTMENT_DURATION_MINUTES * 60 * 1000);
+                    const existingEvents = await calendar.events.list({
+                        calendarId: adminCalendarEmail,
+                        timeMin: startTime.toISOString(),
+                        timeMax: endTime.toISOString(),
+                        singleEvents: true,
+                        maxResults: 2,
+                    });
+                    const unrelatedEvent = (existingEvents.data.items || []).some(event => event.id !== pending.calendarEventId);
+                    if (unrelatedEvent) {
+                        return JSON.stringify({ success: false, error: 'Horario ocupado', instructions_for_ai: 'Ese horario ya está ocupado. Pide otra hora o fecha.' });
+                    }
+
+                    await calendar.events.patch({
+                        calendarId: adminCalendarEmail,
+                        eventId: pending.calendarEventId,
+                        requestBody: {
+                            start: { dateTime: startTime.toISOString(), timeZone: 'America/Bogota' },
+                            end: { dateTime: endTime.toISOString(), timeZone: 'America/Bogota' },
+                        },
+                    });
+
+                    const updated = await updateAppointmentSchedule(storeId, senderPhone, pending.id, date, time, pending.calendarEventId);
+                    if (!updated) {
+                        return JSON.stringify({ success: false, instructions_for_ai: 'El calendario se actualizó, pero la base de datos no confirmó el cambio. Un asesor debe revisar la cita.' });
+                    }
+
+                    sendAppointmentNotification({
+                        adminEmail: adminCalendarEmail,
+                        clientName: pending.clientName,
+                        city: APPOINTMENT_CITY,
+                        date,
+                        time,
+                        appointmentType: pending.appointmentType,
+                        phone: pending.phone,
+                        propertyReference: pending.propertyReference,
+                        address: APPOINTMENT_ADDRESS,
+                    });
+
+                    return JSON.stringify({ success: true, confirmed_date: date, confirmed_time: time, instructions_for_ai: `La cita fue reprogramada para el ${date} a las ${time} en ${APPOINTMENT_ADDRESS}, ${APPOINTMENT_CITY}.` });
+                } catch (error: any) {
+                    logger.error(`Error reprogramando cita: ${error.message}`);
+                    return JSON.stringify({ success: false, instructions_for_ai: 'No pude reprogramar la cita por un problema técnico. Un asesor te ayudará a confirmarla.' });
                 }
             }
 

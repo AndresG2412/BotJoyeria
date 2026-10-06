@@ -9,6 +9,7 @@ import { db } from '../data/connection';
 import { stores } from '../data/schema';
 import { eq } from 'drizzle-orm';
 import { createLimiter } from '../utils/limiter';
+import { MULTIPLE_IMAGE_RESPONSE, MULTIPLE_PRODUCT_RESPONSE, isMultipleImageRequest, isMultipleProductRequest } from './policies';
 
 const MAX_HISTORY_LENGTH  = 15;
 const INACTIVITY_TIMEOUT_MS = 12 * 60 * 60 * 1000; // 12 horas
@@ -276,7 +277,6 @@ async function processUserMessage(
     }
 
     // ── Construir system prompt enriquecido ──
-    const catalogContext    = await buildCatalogContext(storeId);
     const categoriasContext = await buildCategoriasContext();
 
     // Fecha y hora actual en zona horaria de Colombia
@@ -316,14 +316,17 @@ async function processUserMessage(
     if (hasAppointment) {
         appointmentInstruction = `
 \n\n[REGLA CRÍTICA - CITA PREVIAMENTE AGENDADA]:
-- Ya hay una cita previamente agendada en este chat.
-- Si el cliente quiere CANCELARLA, CAMBIARLA (reprogramar, modificar) o AGENDAR NUEVAMENTE (agendar otra cita), debes decirle de forma muy amable que debe contactar al correo del administrador: ${contactEmail}.
-- NUNCA intentes agendar otra cita, cambiarla o cancelarla tú mismo.
-- NUNCA uses la herramienta schedule_appointment bajo ninguna circunstancia en este chat.
+- Ya hay una cita futura previamente agendada para este número de WhatsApp.
+- Si el cliente intenta agendar, informa que ya tiene una cita y pregunta si desea reprogramarla.
+- Solo si responde afirmativamente y proporciona nueva fecha y hora, usa reschedule_appointment.
+- Nunca uses schedule_appointment para crear una segunda cita.
+- Para cancelar o cualquier caso que no pueda resolver la herramienta, deriva al administrador: ${contactEmail}.
 `;
     }
 
-    const enrichedSystemPrompt = SECURITY_PROMPT + '\n\n' + baseSystemPrompt + appointmentInstruction + dateContext + categoriasContext + catalogContext;
+    // Las búsquedas deben pasar por herramientas limitadas; no inyectamos todo
+    // el catálogo en cada prompt porque permitiría enumerarlo masivamente.
+    const enrichedSystemPrompt = SECURITY_PROMPT + '\n\n' + baseSystemPrompt + appointmentInstruction + dateContext + categoriasContext;
 
     // ── Cierre por inactividad ──
     const lastActivity = await getSessionLastActivity(sessionId);
@@ -347,6 +350,21 @@ async function processUserMessage(
         history.push({ role: 'assistant', content: welcomeMsg });
         await saveMemory(sessionId, storeId, senderPhone, history);
         return singleResponse(welcomeMsg);
+    }
+
+    // Regla comercial determinista: una solicitud de varios productos se
+    // redirige al sitio web sin depender únicamente de la obediencia del LLM.
+    const policyResponse = isMultipleImageRequest(userText)
+        ? MULTIPLE_IMAGE_RESPONSE
+        : isMultipleProductRequest(userText)
+            ? MULTIPLE_PRODUCT_RESPONSE
+            : null;
+
+    if (policyResponse) {
+        history.push({ role: 'user', content: userText });
+        history.push({ role: 'assistant', content: policyResponse });
+        await saveMemory(sessionId, storeId, senderPhone, history);
+        return singleResponse(policyResponse);
     }
 
     // ── API keys ──
@@ -455,7 +473,7 @@ async function processUserMessage(
         const scheduleWasCalled  = history.some(
             m => m.role === 'assistant' &&
             Array.isArray((m as any).tool_calls) &&
-            (m as any).tool_calls.some((tc: any) => tc.function?.name === 'schedule_appointment')
+            (m as any).tool_calls.some((tc: any) => ['schedule_appointment', 'reschedule_appointment'].includes(tc.function?.name))
         );
 
         if (appointmentPhrases.test(finalContent) && !scheduleWasCalled) {

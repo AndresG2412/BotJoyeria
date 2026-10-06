@@ -45,7 +45,7 @@ export const config = {
     BOT_MAX_CONCURRENT_CONVERSATIONS: intFromEnv('BOT_MAX_CONCURRENT_CONVERSATIONS', 5),
     // Límites de calidad por mensaje entrante (no son límites oficiales de Meta)
     BOT_MAX_TEXT_MESSAGES: intFromEnv('BOT_MAX_TEXT_MESSAGES', 3),
-    BOT_MAX_IMAGES: intFromEnv('BOT_MAX_IMAGES', 3),
+    BOT_MAX_IMAGES: intFromEnv('BOT_MAX_IMAGES', 1),
 };
 
 // Validación simple

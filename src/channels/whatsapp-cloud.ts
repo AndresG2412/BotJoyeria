@@ -10,6 +10,10 @@ import { db } from '../data/connection';
 import { getSession, setSessionPause, checkRateLimit, incrementMessageCount, getMemory, saveMemory, getAllSessions } from '../data/database';
 import { SYSTEM_PROMPT } from '../bot/prompts';
 import { PendingImage } from '../bot/tools';
+import { isUnsupportedInboundType, UNSUPPORTED_FILE_RESPONSE } from '../bot/policies';
+import { getProductById } from '../data/catalog';
+import { buildWebProductLeadResponse } from '../bot/web-product-lead';
+import { parseWebProductLead, WebProductLead } from '../utils/web-product';
 import {
     WhatsAppCredentials, getWhatsAppHealth, recordWebhook, recordGraphResponse,
     recordMessageSent, recordError, describeGraphError,
@@ -379,6 +383,36 @@ async function runBotResponse(conversation: Conversation, userText: string): Pro
 }
 
 /**
+ * Respuesta especial para el botón de producto de la web.
+ * No pasa por el modelo, herramientas ni búsqueda conversacional.
+ */
+async function runWebProductLeadResponse(
+    conversation: Conversation,
+    userText: string,
+    lead: WebProductLead,
+): Promise<void> {
+    const { store, senderPhone } = conversation;
+    const sessionId = sessionIdFor(conversation);
+    const product = await getProductById(lead.productId, store.id);
+    const response = buildWebProductLeadResponse(product);
+
+    const history = await getMemory(sessionId);
+    const initialSystemPrompt = store.systemPrompt?.trim() || SYSTEM_PROMPT;
+    const sessionHistory = history.length > 0 && history[0]?.role === 'system'
+        ? history
+        : [{ role: 'system', content: initialSystemPrompt }, ...history];
+    sessionHistory.push({ role: 'user', content: userText });
+    sessionHistory.push({ role: 'assistant', content: response });
+    await saveMemory(sessionId, store.id, senderPhone, sessionHistory);
+
+    await sendTextMessage(store, senderPhone, response);
+    await incrementMessageCount(sessionId);
+    await recordUserActivity(sessionId);
+
+    logger.info(`WhatsApp: lead de producto web ${lead.productId} atendido sin IA para ${senderPhone}`);
+}
+
+/**
  * Cola por conversación: los mensajes de un mismo cliente se procesan en orden,
  * mientras que clientes distintos avanzan en paralelo (limitados en el agente).
  */
@@ -399,6 +433,38 @@ function enqueueConversation(conversation: Conversation, userText: string, lastM
             await runBotResponse(conversation, userText);
         })
         .catch(error => logger.error(`Error en cola Cloud API [${conversation.key}]: ${error.message}`))
+        .finally(() => {
+            if (conversationQueues.get(conversation.key) === nextQueue) conversationQueues.delete(conversation.key);
+        });
+
+    conversationQueues.set(conversation.key, nextQueue);
+}
+
+/** Encola el lead web sin pasar por el agrupador de mensajes de la IA. */
+function enqueueWebProductLead(
+    conversation: Conversation,
+    userText: string,
+    lead: WebProductLead,
+    lastMessageId?: string,
+): void {
+    const sessionId = sessionIdFor(conversation);
+    const currentQueue = conversationQueues.get(conversation.key) || Promise.resolve();
+    const nextQueue = currentQueue
+        .then(async () => {
+            const session = await getSession(sessionId);
+            if (session?.isPaused) {
+                const history = await getMemory(sessionId);
+                const sessionHistory = history.length > 0 && history[0]?.role === 'system'
+                    ? history
+                    : [{ role: 'system', content: conversation.store.systemPrompt?.trim() || SYSTEM_PROMPT }, ...history];
+                sessionHistory.push({ role: 'user', content: userText });
+                await saveMemory(sessionId, conversation.store.id, conversation.senderPhone, sessionHistory);
+                return;
+            }
+            await showTypingIndicator(conversation.store, lastMessageId);
+            await runWebProductLeadResponse(conversation, userText, lead);
+        })
+        .catch(error => logger.error(`Error procesando lead web [${conversation.key}]: ${error.message}`))
         .finally(() => {
             if (conversationQueues.get(conversation.key) === nextQueue) conversationQueues.delete(conversation.key);
         });
@@ -452,19 +518,22 @@ async function processInboundMessage(envelope: InboundEnvelope): Promise<void> {
         : (message.from_user_id || '').trim();
     const userText = extractMessageText(message);
     logger.info(`WhatsApp: mensaje entrante ${message.id || 'sin id'} de ${senderPhone || 'sin identificador'} (${message.type || 'sin tipo'})`);
-    if (!senderPhone || !userText) {
-        if (userText && !senderPhone) {
-            logger.warn(`WhatsApp: mensaje sin identificador de remitente (id ${message.id || 'desconocido'})`);
-        }
-        if (message.type && message.type !== 'text' && message.type !== 'interactive') {
-            logger.info(`Mensaje Cloud API no textual ignorado: ${message.type}`);
-        }
+    if (!senderPhone) {
+        logger.warn(`WhatsApp: mensaje sin identificador de remitente (id ${message.id || 'desconocido'})`);
         return;
     }
 
     const store = await resolveStore(phoneNumberId);
     if (!store) {
         logger.warn(`No se encontró tienda para el Phone Number ID ${phoneNumberId}`);
+        return;
+    }
+
+    if (!userText) {
+        if (isUnsupportedInboundType(message.type)) {
+            logger.info(`Mensaje Cloud API no soportado rechazado: ${message.type}`);
+            await sendTextMessage(store, senderPhone, UNSUPPORTED_FILE_RESPONSE);
+        }
         return;
     }
 
@@ -488,6 +557,14 @@ async function processInboundMessage(envelope: InboundEnvelope): Promise<void> {
     const limit = await checkRateLimit(sessionId, 50);
     if (!limit.allowed) {
         await sendTextMessage(store, senderPhone, 'Has alcanzado el límite de mensajes por hoy. Podrás seguir chateando mañana. ¡Gracias!');
+        return;
+    }
+
+    const webProductLead = parseWebProductLead(userText);
+    if (webProductLead) {
+        // Se procesa antes de addToBatch: el cliente ya eligió una pieza y no
+        // necesita pasar por búsqueda, filtros ni preguntas de descubrimiento.
+        enqueueWebProductLead(conversation, userText, webProductLead, message.id);
         return;
     }
 
