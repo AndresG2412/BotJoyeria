@@ -12,7 +12,7 @@ import { initializeTelegramClients, stopTelegramBot } from './channels/telegram'
 import { dashboardRouter } from './routes/dashboard';
 import path from 'path';
 import { eq } from 'drizzle-orm';
-import { initializeSupabase } from './config/supabase';
+import { initializeDatabase } from './data/pool';
 import { db } from './data/connection';
 import { users, stores } from './data/schema';
 
@@ -26,7 +26,7 @@ function safeEqual(a: unknown, b: string): boolean {
 function bootstrap() {
     logger.info(`Iniciando AI Bot para Ecommerce: ${config.STORE_NAME}`);
 
-    initializeSupabase();
+    void initializeDatabase();
 
     const app = express();
 

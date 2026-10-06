@@ -38,10 +38,9 @@ export const config = {
     // Tienda pública: el catálogo se lee de su API (solo lo publicado, sin credenciales)
     SITE_URL: process.env.SITE_URL || 'https://www.mr18kts.online',
     CATALOG_CACHE_MS: intFromEnv('CATALOG_CACHE_MS', 5 * 60 * 1000),
-    // Supabase (sesiones de chat y citas del bot)
-    SUPABASE_URL: process.env.SUPABASE_URL || '',
-    SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY || '',
-    SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
+    // Base de la tienda, esquema `bot` (sesiones y citas). Ver src/data/pool.ts.
+    BOT_DATABASE_URL: process.env.BOT_DATABASE_URL || '',
+    BOT_DATABASE_CA_PATH: process.env.BOT_DATABASE_CA_PATH || '',
     // Ruta al JSON de cuenta de servicio de Google (solo para Google Calendar)
     GOOGLE_SERVICE_ACCOUNT_PATH: process.env.GOOGLE_SERVICE_ACCOUNT_PATH || '',
     // Agrupación de mensajes consecutivos del mismo cliente (WhatsApp)
