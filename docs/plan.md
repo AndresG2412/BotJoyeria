@@ -13,32 +13,40 @@
 
 ## Fases
 
-### Fase 0 — Proteger el trabajo actual (build)
+### Fase 0 — Proteger el trabajo actual (build) ✅
 - `npm run build && npm test`; commit lógico del rework sin commitear.
+- Commit: `c2fc425 feat(appointments): scheduling flow with validations, Google Calendar and policies`.
 - **Terminado:** `git status` limpio; build y tests en verde.
 
-### Fase 1 — Reparar la persistencia (base de PRUEBA)
-- Aplicar: `ALTER TABLE public.appointments ADD COLUMN IF NOT EXISTS calendar_event_id text;`
-- Corregir `supabase/001_appointments.sql`: quitar el FK a `stores` y dejarlo como plantilla aplicable a la base real cuando se conecte.
-- **Terminado:** una cita de prueba (marcada "PRUEBA") queda en `appointments` con `calendar_event_id` y el evento de Calendar NO se borra. Limpieza de la prueba al final.
+### Fase 1 — Reparar la persistencia (base de PRUEBA) ✅
+- Aplicado en Supabase: `ALTER TABLE public.appointments ADD COLUMN IF NOT EXISTS calendar_event_id text;`
+- Corregido `supabase/001_appointments.sql`: quitado el FK a `stores`; queda como plantilla para la base real.
+- Commit: `db11b89 feat(calendar): health check dashboard, appointment schema fix and explicit scheduling permission`.
 
-### Fase 2 — Permisos de Calendar visibles en el dashboard del admin
-- Nueva tarjeta de salud de Calendar en el panel (patrón de `whatsapp-health.ts`): endpoint `GET /dashboard/api/calendar/health` que intenta listar eventos del calendario `adminCalendarEmail`.
-- Estados: `SIN_CONFIGURAR` (falta `adminCalendarEmail` o el JSON de la cuenta de servicio) / `CALENDARIO_NO_COMPARTIDO` (403 o 404 de Google) / `OPERATIVO`.
-- En `CALENDARIO_NO_COMPARTIDO`, el panel muestra el `client_email` de la cuenta de servicio y la instrucción exacta: "Comparte tu Google Calendar con este correo, con permiso 'Hacer cambios en eventos'".
-- **Terminado:** sin compartir el calendario, el panel muestra el correo y el paso a seguir; tras compartirlo, la tarjeta pasa a `OPERATIVO` sin reiniciar.
+### Fase 2 — Permisos de Calendar visibles en el dashboard del admin ✅
+- Creado `src/utils/calendar-health.ts` y endpoint `GET /dashboard/api/calendar/health/:storeId`.
+- Nueva tarjeta en el panel con estados `SIN_CONFIGURAR` / `CALENDARIO_NO_COMPARTIDO` / `OPERATIVO` y el `client_email` exacto a compartir.
 
-### Fase 3 — Pulido del flujo de agendar
-- Paso de permiso explícito ANTES de pedir datos: "¿Te agendo una cita presencial?" — el bot no pide nombre/teléfono/fecha hasta un sí.
-- La confirmación final incluye: solo atienden en Pitalito y un asesor llamará horas antes.
-- Se conserva lo que ya funciona: el bot pregunta los datos, ciudad/dirección fijas, horario validado en `policies.ts`.
-- **Terminado:** flujo de prueba completo paso a paso + `npm run build && npm test` en verde.
+### Fase 3 — Pulido del flujo de agendar ✅
+- Agregado paso de permiso explícito: "¿Me das permiso para agendarte una cita presencial en Pitalito?".
+- Confirmación incluye: solo atienden en Pitalito y un asesor llamará horas antes para confirmar.
+- `npm run build && npm test` sigue en verde.
 
-### Fase 4 — Verificación E2E en local (calendario de prueba)
-- Requisitos (usuario): `google-service-account.json` en la raíz (ya en `.gitignore`), calendario de prueba compartido a la cuenta de servicio, `adminCalendarEmail` en `data/local-stores.json`.
-- Ejercitar `schedule_appointment` con una cita "PRUEBA": evento visible en el calendario (nombre, teléfono, fecha, 1 h), fila en `appointments` con `calendar_event_id`, respuesta sin "problema técnico".
+### Fase 4 — Verificación E2E en local (calendario de prueba) ⏳
+**Pendiente de la parte humana.**
+Requisitos para continuar:
+1. `google-service-account.json` en la raíz del proyecto (ya está en `.gitignore`).
+2. Un calendario de Google de prueba compartido con el `client_email` de ese JSON, con permiso **"Hacer cambios en eventos"**.
+3. `adminCalendarEmail` configurado en `data/local-stores.json` vía el dashboard (pestaña "Mis Datos" → "Configurar Citas").
+
+Verificación a realizar:
+- Enviar "Hola" al bot (por WhatsApp o con un script directo) y completar el flujo hasta agendar.
+- Comprobar que en el panel la tarjeta de Calendar pase a `OPERATIVO`.
+- Confirmar que el evento de 1 h aparece en el calendario de prueba con los datos del cliente.
+- Confirmar que la fila en `appointments` tiene `calendar_event_id`.
+- Confirmar que el cliente recibe la confirmación sin "problema técnico".
 - Limpiar el evento y la fila de prueba.
-- **Terminado:** los tres puntos verificados y registrados en este documento (fecha y resultado).
+- **Terminado:** registrar fecha y resultado en este documento.
 
 ## Fuera de alcance
 - Cierre de RLS / clave service role (se retoma al conectar la base real).
