@@ -55,6 +55,15 @@ function saveStores(stores: LocalStore[]) {
 
 let localStores = loadStores();
 
+/** Borra una tienda por id. Devuelve false si no existe. */
+export function deleteLocalStore(id: string): boolean {
+    const remaining = localStores.filter(store => store.id !== id);
+    if (remaining.length === localStores.length) return false;
+    localStores = remaining;
+    saveStores(localStores);
+    return true;
+}
+
 // Mock de base de datos para saltar Postgres y usar una tienda por defecto (Single-Tenant)
 export const db = {
     query: {
@@ -85,10 +94,11 @@ export const db = {
             }
         })
     }),
+    // El mock no puede leer la condición del where: borrar a ciegas eliminaba siempre la
+    // primera tienda. Las tiendas se borran con deleteLocalStore(id).
     delete: () => ({
         where: async () => {
-            localStores = localStores.length > 1 ? localStores.slice(1) : [];
-            saveStores(localStores);
+            throw new Error('Borrado no disponible en el almacenamiento local; usa deleteLocalStore(id).');
         }
     }),
     update: () => ({

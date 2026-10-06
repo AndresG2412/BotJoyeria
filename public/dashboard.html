@@ -148,9 +148,12 @@
                         <h2><i class="ph ph-package" style="vertical-align:middle;margin-right:6px;"></i> Catálogo</h2>
                     </div>
                     <div style="display:flex;gap:8px;">
-                        <button class="btn-primary" onclick="openProductModal()">
-                            <i class="ph ph-plus-circle"></i> Agregar Producto
+                        <button class="btn-sm" onclick="refreshCatalog()" title="Volver a leer la tienda">
+                            <i class="ph ph-arrows-clockwise"></i> Actualizar
                         </button>
+                        <a class="btn-primary" href="https://www.mr18kts.online/admin/collections/products" target="_blank" rel="noopener" style="text-decoration:none;">
+                            <i class="ph ph-arrow-square-out"></i> Administrar en la tienda
+                        </a>
                     </div>
                 </div>
                 <div class="categories-tabs-container" id="categoriesTabs" style="display:flex;gap:8px;padding:12px 24px;border-bottom:1px solid var(--border);overflow-x:auto;">
@@ -591,6 +594,14 @@
     // ═══════════════════════════════════════
     //  PRODUCTS
     // ═══════════════════════════════════════
+    async function refreshCatalog() {
+        const res = await safeFetch('/dashboard/api/products?refresh=1');
+        if (!res) return;
+        await loadCategorias();
+        await loadProducts();
+        showToast('Catálogo actualizado desde la tienda', 'success');
+    }
+
     async function loadProducts() {
         const url = activeCategoriaId ? `/dashboard/api/products?categoriaId=${encodeURIComponent(activeCategoriaId)}` : '/dashboard/api/products';
         const res = await safeFetch(url);
@@ -704,14 +715,16 @@
         const grid = document.getElementById('productsGrid');
         grid.innerHTML = '';
         if (allProducts.length === 0) {
-            grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;padding:60px;"><div class="empty-icon"><i class="ph ph-package"></i></div><h3>Sin productos</h3><p>Agrega tu primer producto con el botón de arriba.</p></div>';
+            grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;padding:60px;"><div class="empty-icon"><i class="ph ph-package"></i></div><h3>Sin piezas publicadas</h3><p>El bot muestra las piezas publicadas en la tienda. Cárgalas desde el panel de la tienda.</p></div>';
             return;
         }
         allProducts.forEach(p => {
             const card = document.createElement('div');
             card.className = 'product-card';
             card.style.cssText = 'padding:0;overflow:hidden;display:grid;grid-template-columns:140px 1fr;min-height:110px;';
-            const priceStr = new Intl.NumberFormat('es-CO', { style:'currency', currency:'COP', maximumFractionDigits:0 }).format(p.precio);
+            const priceStr = p.precio > 0
+                ? new Intl.NumberFormat('es-CO', { style:'currency', currency:'COP', maximumFractionDigits:0 }).format(p.precio)
+                : 'Precio a consultar';
             const firstPhoto = (Array.isArray(p.imagenes) && p.imagenes.length > 0) ? p.imagenes[0] : (p.imagen_url || '');
             const imgHTML = firstPhoto
                 ? `<img src="${escapeHTML(firstPhoto)}" alt="${escapeHTML(p.nombre)}" style="width:140px;height:100%;object-fit:cover;display:block;">`
@@ -729,12 +742,10 @@
                         </div>
                     </div>
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;align-self:end;">
-                        <button class="btn-sm btn-edit" style="justify-content:center;"><i class="ph ph-pencil-simple"></i> Editar</button>
-                        <button class="btn-sm danger btn-delete" style="justify-content:center;"><i class="ph ph-trash"></i> Eliminar</button>
+                        <span style="font-size:11px;color:var(--text3);align-self:center;">${p.stock > 0 ? `${p.stock} disponible(s)` : 'Bajo pedido'}</span>
+                        <a class="btn-sm" style="justify-content:center;text-decoration:none;" href="${escapeHTML(p.url || '#')}" target="_blank" rel="noopener"><i class="ph ph-arrow-square-out"></i> Ver en la tienda</a>
                     </div>
                 </div>`;
-            card.querySelector('.btn-edit').onclick   = () => editProduct(p.id);
-            card.querySelector('.btn-delete').onclick = () => confirmDelete(p.id, p.nombre);
             grid.appendChild(card);
         });
     }

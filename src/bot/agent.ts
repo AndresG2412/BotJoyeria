@@ -441,7 +441,7 @@ async function processUserMessage(
                         pqrEmail
                     );
                 } catch (parseError) {
-                    logger.error(`Error parseando args de ${toolCall.function.name}:`, toolCall.function.arguments);
+                    logger.error(`Error parseando args de ${toolCall.function.name} (${toolCall.function.arguments?.length || 0} caracteres)`);
                     functionResult = JSON.stringify({ error: 'Argumentos inválidos proporcionados por la IA.' });
                 }
 

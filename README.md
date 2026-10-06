@@ -26,13 +26,10 @@ npm install
 copy .env.example .env
 # Editar .env con tus credenciales reales
 
-# 4. Ejecutar migraciones de base de datos, si aplica
-npx ts-node migrate.ts
-
-# 5. Compilar
+# 4. Compilar
 npm run build
 
-# 6. Iniciar
+# 5. Iniciar
 npm start
 ```
 
@@ -49,7 +46,7 @@ Copia `.env.example` a `.env` y completa **todas** las variables marcadas como R
 | `SUPABASE_URL` | URL de tu proyecto en Supabase |
 | `SUPABASE_ANON_KEY` | Clave anon/publica de Supabase |
 | `SUPABASE_SERVICE_ROLE_KEY` | (Recomendado) Service role key |
-| `DATABASE_URL` | String de conexion PostgreSQL para migraciones |
+| `SITE_URL` | (Opcional) Tienda de donde se lee el catalogo. Default `https://www.mr18kts.online` |
 | `META_ACCESS_TOKEN` | Token de WhatsApp Cloud API |
 | `META_PHONE_ID` | Phone Number ID de WhatsApp |
 | `META_WABA_ID` | WhatsApp Business Account ID |
@@ -82,22 +79,26 @@ procesan en orden y clientes distintos se atienden en paralelo.
   Meta reporta por webhook). Los registros viven en memoria y se reinician con el servidor.
 - `GET /health` (publico): solo indica que el proceso esta vivo.
 
+### Catalogo
+
+El bot no guarda piezas propias: lee las **publicadas** en la tienda
+(`GET ${SITE_URL}/api/products` y `/api/categorias`), sin credenciales, y las guarda en memoria
+5 minutos (`CATALOG_CACHE_MS`). Si la tienda no responde, sigue usando la ultima copia buena.
+Las piezas, precios, fotos y stock se administran en `${SITE_URL}/admin`; la pestaña Catalogo del
+panel del bot es de solo lectura (boton "Actualizar" para forzar la lectura).
+
 ### Contacto directo desde la web
 
-Cada producto de la tienda pública puede abrir WhatsApp con un mensaje que incluye su `id` como
-referencia. El número del negocio se configura en la propia web:
+El boton "Consultar por WhatsApp" de cada ficha de la tienda envia:
 
-```ts
-const message = `Hola, estoy interesado en el producto "${product.nombre}" (Ref: ${product.id}) que vi en la web. Por favor dame más información.`;
-const whatsappUrl = `https://wa.me/${NUMERO_DEL_NEGOCIO}?text=${encodeURIComponent(message)}`;
+```
+Hola, me interesa la pieza: <titulo>[ en Oro amarillo|blanco|rosa]. ¿Me das más info?
 ```
 
-`src/utils/web-product.ts` expone `buildWebProductMessage()` con el formato exacto (y
-`parseWebProductLead()` para reconocerlo) por si se quiere reutilizar. Cuando el webhook recibe
-ese formato, valida la referencia exacta del producto y responde directamente sin pasar por la IA
-ni hacer búsquedas generales. Si el cliente confirma la pieza, el flujo normal solicita nombre,
-teléfono, fecha y hora; la cita se registra siempre en Pitalito, en Calle 4 #1-31, incluyendo el
-producto de interés.
+`parseWebProductLead()` (`src/utils/web-product.ts`) reconoce ese mensaje (y el formato antiguo con
+`(Ref: id)` y "vi en la web"), busca la pieza por id, slug o nombre exacto y responde directamente sin
+pasar por la IA. Si el cliente confirma la pieza, el flujo normal solicita nombre, telefono, fecha y
+hora; la cita se registra siempre en Pitalito, en Calle 4 #1-31, incluyendo el producto de interes.
 
 Las imagenes del catalogo se guardan en WebP; como WhatsApp solo acepta JPEG/PNG en mensajes de
 imagen, el bot las convierte a JPEG al enviarlas.
@@ -122,7 +123,6 @@ src/
   bot/
     agent.ts          # Agente conversacional OpenAI
     prompts.ts        # System prompts
-    remarketing.ts    # Motor de remarketing
     tools.ts          # Tools/Functions disponibles para el LLM
   channels/
     telegram.ts       # Integracion Telegram
@@ -131,7 +131,7 @@ src/
     env.ts            # Carga y validacion de .env
     supabase.ts       # Cliente de Supabase
   data/
-    catalog.ts        # Busqueda de productos en Supabase
+    catalog.ts        # Catalogo leido de la API publica de la tienda (solo lectura, con cache)
     connection.ts     # Conexion Drizzle ORM
     database.ts       # Gestion de sesiones y citas
     schema.ts         # Esquema de base de datos (Drizzle)

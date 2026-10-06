@@ -77,3 +77,16 @@ test('rechaza archivos y contenido multimedia entrante', () => {
     assert.equal(isUnsupportedInboundType('text'), false);
     assert.match(UNSUPPORTED_FILE_RESPONSE, /catálogo/i);
 });
+
+test('las fechas de cita se calculan en hora de Colombia', async () => {
+    const { appointmentInstant, isAfterTodayInBogota, parseAppointmentDate, todayInBogota } = await import('../src/bot/policies');
+    // 6 oct, 22:00 en Bogotá = 7 oct, 03:00 UTC: "hoy" sigue siendo el 6.
+    const now = new Date('2026-10-07T03:00:00Z');
+    assert.equal(todayInBogota(now), '2026-10-06');
+    assert.equal(isAfterTodayInBogota('2026-10-06', now), false);
+    assert.equal(isAfterTodayInBogota('2026-10-07', now), true);
+    assert.equal(appointmentInstant('2026-10-08', '14:00').toISOString(), '2026-10-08T19:00:00.000Z');
+    assert.equal(parseAppointmentDate('2026-02-30'), null);
+    assert.equal(parseAppointmentDate('8/10/2026'), null);
+    assert.equal(parseAppointmentDate('2026-10-08')?.getDate(), 8);
+});

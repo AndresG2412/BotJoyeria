@@ -2,10 +2,9 @@ import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import axios from 'axios';
 import sharp from 'sharp';
-import { logger } from '../utils/logger';
+import { logger, maskPhone } from '../utils/logger';
 import { config } from '../config/env';
 import { handleUserMessage } from '../bot/agent';
-import { recordUserActivity } from '../bot/remarketing';
 import { db } from '../data/connection';
 import { getSession, setSessionPause, checkRateLimit, incrementMessageCount, getMemory, saveMemory, getAllSessions } from '../data/database';
 import { SYSTEM_PROMPT } from '../bot/prompts';
@@ -13,7 +12,7 @@ import { PendingImage } from '../bot/tools';
 import { isUnsupportedInboundType, UNSUPPORTED_FILE_RESPONSE } from '../bot/policies';
 import { getProductById } from '../data/catalog';
 import { buildWebProductLeadResponse } from '../bot/web-product-lead';
-import { parseWebProductLead, WebProductLead } from '../utils/web-product';
+import { parseWebProductLead, webLeadReference, WebProductLead } from '../utils/web-product';
 import {
     WhatsAppCredentials, getWhatsAppHealth, recordWebhook, recordGraphResponse,
     recordMessageSent, recordError, describeGraphError,
@@ -379,7 +378,6 @@ async function runBotResponse(conversation: Conversation, userText: string): Pro
 
     await sendMultipleMessages(store, senderPhone, aiResponse.messages);
     await incrementMessageCount(sessionId);
-    await recordUserActivity(sessionId);
 }
 
 /**
@@ -393,8 +391,8 @@ async function runWebProductLeadResponse(
 ): Promise<void> {
     const { store, senderPhone } = conversation;
     const sessionId = sessionIdFor(conversation);
-    const product = await getProductById(lead.productId, store.id);
-    const response = buildWebProductLeadResponse(product);
+    const product = await getProductById(webLeadReference(lead), store.id);
+    const response = buildWebProductLeadResponse(product, lead.tono);
 
     const history = await getMemory(sessionId);
     const initialSystemPrompt = store.systemPrompt?.trim() || SYSTEM_PROMPT;
@@ -407,9 +405,8 @@ async function runWebProductLeadResponse(
 
     await sendTextMessage(store, senderPhone, response);
     await incrementMessageCount(sessionId);
-    await recordUserActivity(sessionId);
 
-    logger.info(`WhatsApp: lead de producto web ${lead.productId} atendido sin IA para ${senderPhone}`);
+    logger.info(`WhatsApp: lead de producto web ${product?.id || 'no encontrado'} atendido sin IA para ${maskPhone(senderPhone)}`);
 }
 
 /**

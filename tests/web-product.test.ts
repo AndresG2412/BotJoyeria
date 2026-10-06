@@ -36,3 +36,15 @@ test('acepta referencias largas y nombres con caracteres especiales', () => {
     assert.equal(lead?.productId, '550e8400-e29b-41d4-a716-446655440000');
     assert.equal(lead?.productName, 'Anillo María & José');
 });
+
+test('reconoce el mensaje del botón de la ficha de la tienda', () => {
+    assert.deepEqual(
+        parseWebProductLead('Hola, me interesa la pieza: Cadena dije esmeralda . ¿Me das más info?'),
+        { productId: '', productName: 'Cadena dije esmeralda' },
+    );
+    assert.deepEqual(
+        parseWebProductLead('Hola, me interesa la pieza: Anillo Sr. Martínez en Oro blanco. ¿Me das más info?'),
+        { productId: '', productName: 'Anillo Sr. Martínez', tono: 'Oro blanco' },
+    );
+    assert.equal(parseWebProductLead('Hola, me interesa la pieza que vi ayer'), null);
+});
