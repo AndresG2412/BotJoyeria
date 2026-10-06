@@ -142,15 +142,18 @@ export type Product = {
     stock: number;
     imagenes: string[];
     categoriaId: string;
+    material?: string;
+    piedra?: string;
+    colorMetal?: string;
+    colorPiedra?: string;
+    estilo?: string;
 };
 
 export async function searchProducts(query: string, storeId: string): Promise<Product[]> {
     const products = await getAllProducts(storeId);
-    const lowerQuery = query.toLowerCase();
+    const lowerQuery = normalizeText(query);
     return products.filter(p =>
-        p.name.toLowerCase().includes(lowerQuery) ||
-        p.description.toLowerCase().includes(lowerQuery) ||
-        p.caracteristicas.some(c => c.toLowerCase().includes(lowerQuery))
+        productSearchText(p).includes(lowerQuery)
     ).slice(0, 5);
 }
 
@@ -181,6 +184,11 @@ function mapRowToProduct(row: any): Product {
         stock: row.stock || 0,
         imagenes,
         categoriaId: row.categoria_id || 'generales',
+        material: row.material || '',
+        piedra: row.piedra || row.stone || '',
+        colorMetal: row.color_metal || row.colorMetal || '',
+        colorPiedra: row.color_piedra || row.colorPiedra || '',
+        estilo: row.estilo || row.style || '',
     };
 }
 
@@ -191,6 +199,7 @@ export async function getProductById(id: string, storeId: string): Promise<Produ
             .from('productos')
             .select('*')
             .eq('id', id)
+            .eq('store_id', storeId)
             .maybeSingle();
 
         if (error) throw error;
@@ -209,6 +218,7 @@ export async function getProductRawImages(id: string, storeId: string): Promise<
             .from('productos')
             .select('imagenes')
             .eq('id', id)
+            .eq('store_id', storeId)
             .maybeSingle();
 
         if (error) throw error;
@@ -224,6 +234,7 @@ export async function getAllProducts(storeId?: string, categoriaId?: string): Pr
     if (!supabase) return [];
     try {
         let query = supabase.from('productos').select('*');
+        if (storeId) query = query.eq('store_id', storeId);
         if (categoriaId) {
             query = query.eq('categoria_id', categoriaId);
         }
@@ -237,19 +248,74 @@ export async function getAllProducts(storeId?: string, categoriaId?: string): Pr
 }
 
 export type ProductFilter = {
-    categoriaId: string;
+    storeId: string;
+    categoriaId?: string;
     ciudad?: string;
     tipo_propiedad?: string;
     presupuestoMax?: number;
+    material?: string;
+    piedra?: string;
+    colorMetal?: string;
+    colorPiedra?: string;
+    estilo?: string;
+    disponibilidad?: 'disponible' | 'bajo_pedido' | 'cualquiera';
 };
+
+function productSearchText(product: Product): string {
+    return normalizeText([
+        product.name,
+        product.description,
+        ...product.caracteristicas,
+        product.material,
+        product.piedra,
+        product.colorMetal,
+        product.colorPiedra,
+        product.estilo,
+    ].filter(Boolean).join(' '));
+}
+
+function includesFilter(product: Product, value?: string): boolean {
+    return !value || productSearchText(product).includes(normalizeText(value));
+}
+
+/**
+ * Filtrado progresivo para el asesor. Usa campos estructurados cuando existan
+ * y también las características actuales mientras el catálogo se normaliza.
+ */
+export async function filterProducts(filters: ProductFilter): Promise<Product[]> {
+    const products = await getAllProducts(filters.storeId);
+    return products.filter(product => matchesProductFilters(product, filters));
+}
+
+export function matchesProductFilters(product: Product, filters: ProductFilter): boolean {
+    if (filters.categoriaId) {
+        const category = normalizeText(filters.categoriaId);
+        const productCategory = normalizeText(product.categoriaId);
+        const categoryMatches = productCategory.includes(category)
+            || category.includes(productCategory)
+            || productSearchText(product).includes(category);
+        if (!categoryMatches) return false;
+    }
+    if (!includesFilter(product, filters.material)) return false;
+    if (!includesFilter(product, filters.piedra)) return false;
+    if (!includesFilter(product, filters.colorMetal)) return false;
+    if (!includesFilter(product, filters.colorPiedra)) return false;
+    if (!includesFilter(product, filters.estilo)) return false;
+    if (filters.presupuestoMax && filters.presupuestoMax > 0 && (product.price <= 0 || product.price > filters.presupuestoMax)) return false;
+    if (filters.disponibilidad === 'disponible' && product.stock <= 0) return false;
+    if (filters.disponibilidad === 'bajo_pedido' && product.stock > 0) return false;
+    return true;
+}
 
 export async function getProductsFiltered(filter: ProductFilter): Promise<Product[]> {
     if (!supabase) return [];
     try {
-        const { data, error } = await supabase
+        let query = supabase
             .from('productos')
             .select('*')
-            .eq('categoria_id', filter.categoriaId);
+            .eq('store_id', filter.storeId);
+        if (filter.categoriaId) query = query.eq('categoria_id', filter.categoriaId);
+        const { data, error } = await query;
 
         if (error) throw error;
         let rows = data || [];
@@ -297,10 +363,12 @@ export async function getAlternativeProducts(filter: ProductFilter): Promise<{
     const empty = { porCiudad: [], porTipo: [], enCategoria: [], ciudadesDisponibles: [], tiposDisponibles: [] };
     if (!supabase) return empty;
     try {
-        const { data, error } = await supabase
+        let query = supabase
             .from('productos')
             .select('*')
-            .eq('categoria_id', filter.categoriaId);
+            .eq('store_id', filter.storeId);
+        if (filter.categoriaId) query = query.eq('categoria_id', filter.categoriaId);
+        const { data, error } = await query;
 
         if (error) throw error;
         const rows = data || [];
@@ -384,6 +452,7 @@ export async function updateProduct(id: string, updates: Partial<Product>, store
             .from('productos')
             .update(dbUpdates)
             .eq('id', id)
+            .eq('store_id', storeId)
             .select();
 
         if (error) throw error;
@@ -402,6 +471,7 @@ export async function deleteProduct(id: string, storeId: string): Promise<boolea
             .from('productos')
             .delete()
             .eq('id', id)
+            .eq('store_id', storeId)
             .select('id');
 
         if (error) throw error;

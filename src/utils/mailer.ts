@@ -24,19 +24,21 @@ export async function sendAppointmentNotification(data: AppointmentEmailData): P
 
     const typeLabels: Record<string, string> = {
         venta_joya: 'Venta de Joya',
+        asesoria_presencial: 'Asesoría presencial',
+        producto_bajo_pedido: 'Producto bajo pedido',
     };
 
     const typeLabel = typeLabels[data.appointmentType] ?? data.appointmentType;
 
     const details = [
         `<tr><td style="padding:8px 0;color:#6b7280;font-size:14px;">Cliente</td><td style="padding:8px 0;font-weight:600;font-size:14px;">${data.clientName}</td></tr>`,
-        `<tr><td style="padding:8px 0;color:#6b7280;font-size:14px;">Ciudad de Envío</td><td style="padding:8px 0;font-weight:600;font-size:14px;">${data.city}</td></tr>`,
+        `<tr><td style="padding:8px 0;color:#6b7280;font-size:14px;">Lugar de atención</td><td style="padding:8px 0;font-weight:600;font-size:14px;">${data.city}</td></tr>`,
         `<tr><td style="padding:8px 0;color:#6b7280;font-size:14px;">Fecha</td><td style="padding:8px 0;font-weight:600;font-size:14px;">${data.date}</td></tr>`,
         `<tr><td style="padding:8px 0;color:#6b7280;font-size:14px;">Hora</td><td style="padding:8px 0;font-weight:600;font-size:14px;">${data.time}</td></tr>`,
         `<tr><td style="padding:8px 0;color:#6b7280;font-size:14px;">Tipo</td><td style="padding:8px 0;font-weight:600;font-size:14px;">${typeLabel}</td></tr>`,
         data.phone ? `<tr><td style="padding:8px 0;color:#6b7280;font-size:14px;">WhatsApp</td><td style="padding:8px 0;font-weight:600;font-size:14px;">${data.phone}</td></tr>` : '',
         data.propertyReference ? `<tr><td style="padding:8px 0;color:#6b7280;font-size:14px;">Joya / Producto</td><td style="padding:8px 0;font-weight:600;font-size:14px;">${data.propertyReference}</td></tr>` : '',
-        data.address ? `<tr><td style="padding:8px 0;color:#6b7280;font-size:14px;">Referencia Joya</td><td style="padding:8px 0;font-weight:600;font-size:14px;">${data.address}</td></tr>` : '',
+        data.address ? `<tr><td style="padding:8px 0;color:#6b7280;font-size:14px;">Dirección</td><td style="padding:8px 0;font-weight:600;font-size:14px;">${data.address}</td></tr>` : '',
     ].filter(Boolean).join('');
 
     const html = `

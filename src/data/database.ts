@@ -199,6 +199,7 @@ export interface AppointmentData {
     propertyReference?: string;
     address?: string;
     phone?: string;
+    calendarEventId?: string;
     status: 'scheduled' | 'cancelled' | 'completed';
     createdAt: Date | any;
 }
@@ -221,6 +222,7 @@ export const saveAppointment = async (storeId: string, senderPhone: string, data
                 property_reference: data.propertyReference || '',
                 address: data.address || '',
                 phone: data.phone || '',
+                calendar_event_id: data.calendarEventId || null,
                 status: data.status || 'scheduled',
                 created_at: data.createdAt instanceof Date ? data.createdAt.toISOString() : new Date().toISOString(),
                 updated_at: new Date().toISOString()
@@ -235,31 +237,83 @@ export const saveAppointment = async (storeId: string, senderPhone: string, data
 };
 
 export const checkPendingAppointment = async (storeId: string, senderPhone: string): Promise<boolean> => {
-    if (!supabase) return false;
+    return !!(await getPendingAppointment(storeId, senderPhone));
+};
+
+export type PendingAppointment = AppointmentData & {
+    id: string;
+    storeId: string;
+    senderPhone: string;
+    calendarEventId?: string | null;
+};
+
+export const getPendingAppointment = async (storeId: string, senderPhone: string): Promise<PendingAppointment | null> => {
+    if (!supabase) return null;
     try {
         const { data, error } = await supabase
             .from('appointments')
-            .select('date, time')
+            .select('*')
             .eq('store_id', storeId)
             .eq('sender_phone', senderPhone)
             .eq('status', 'scheduled');
 
         if (error) throw error;
-        if (!data || data.length === 0) return false;
+        if (!data || data.length === 0) return null;
 
         const now = new Date();
         for (const row of data) {
             if (row.date && row.time) {
-                const [year, month, day] = row.date.split('-').map(Number);
-                const [hour, minute] = row.time.split(':').map(Number);
-                const appointmentDateTime = new Date(year, month - 1, day, hour, minute);
-                if (appointmentDateTime > now) {
-                    return true;
-                }
+                const appointmentDateTime = new Date(`${row.date}T${row.time}:00-05:00`);
+                if (appointmentDateTime > now) return {
+                    id: row.id,
+                    storeId: row.store_id,
+                    senderPhone: row.sender_phone,
+                    clientName: row.client_name || '',
+                    city: row.city || '',
+                    date: row.date,
+                    time: row.time,
+                    appointmentType: row.appointment_type || '',
+                    propertyReference: row.property_reference || '',
+                    address: row.address || '',
+                    phone: row.phone || '',
+                    calendarEventId: row.calendar_event_id || null,
+                    status: row.status,
+                    createdAt: row.created_at,
+                };
             }
         }
     } catch (e) {
         logger.error(`Error checking pending appointment: ${e}`);
     }
-    return false;
+    return null;
+};
+
+export const updateAppointmentSchedule = async (
+    storeId: string,
+    senderPhone: string,
+    appointmentId: string,
+    date: string,
+    time: string,
+    calendarEventId?: string | null,
+): Promise<boolean> => {
+    if (!supabase) return false;
+    try {
+        const { error } = await supabase
+            .from('appointments')
+            .update({
+                date,
+                time,
+                ...(calendarEventId !== undefined ? { calendar_event_id: calendarEventId } : {}),
+                status: 'scheduled',
+                updated_at: new Date().toISOString(),
+            })
+            .eq('id', appointmentId)
+            .eq('store_id', storeId)
+            .eq('sender_phone', senderPhone);
+        if (error) throw error;
+        return true;
+    } catch (e) {
+        logger.error(`Error updating appointment: ${e}`);
+        return false;
+    }
 };

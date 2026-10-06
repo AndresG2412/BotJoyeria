@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node dist/app.js",
     "dev": "ts-node src/app.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
     "@ngrok/ngrok": "^1.7.0",
