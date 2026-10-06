@@ -14,7 +14,7 @@ import { MULTIPLE_IMAGE_RESPONSE, MULTIPLE_PRODUCT_RESPONSE, isMultipleImageRequ
 const MAX_HISTORY_LENGTH  = 15;
 const INACTIVITY_TIMEOUT_MS = 12 * 60 * 60 * 1000; // 12 horas
 const MAX_TOOL_ROUNDS = 5;           // Evita bucles infinitos de tool calls
-const MODEL_TIMEOUT_MS = 30 * 1000;  // Si un modelo no responde, pasar al siguiente de la cascada
+const MODEL_TIMEOUT_MS = 20 * 1000;  // Si un modelo no responde, pasar al siguiente de la cascada
 
 // Conversaciones procesándose con la IA al mismo tiempo (todas las tiendas y canales).
 const aiLimiter = createLimiter(config.BOT_MAX_CONCURRENT_CONVERSATIONS);
@@ -22,7 +22,7 @@ const aiLimiter = createLimiter(config.BOT_MAX_CONCURRENT_CONVERSATIONS);
 // ─────────────────────────────────────────
 //  Cascadas de modelos
 // ─────────────────────────────────────────
-type ModelEntry = { id: string; tools: boolean };
+export type ModelEntry = { id: string; tools: boolean };
 
 const SIMPLE_MODEL_CASCADE: ModelEntry[] = [
     { id: 'gemini-3.1-flash-lite', tools: true  },
@@ -33,8 +33,28 @@ const SIMPLE_MODEL_CASCADE: ModelEntry[] = [
 const COMPLEX_MODEL_CASCADE: ModelEntry[] = [
     { id: 'gemini-3.5-flash',      tools: true  },
     { id: 'gemini-3.1-flash-lite', tools: true  },
-    { id: 'gemini-2.5-flash-lite', tools: false },
+    { id: 'gemini-2.5-flash',      tools: true  },
+    // Sin modelos «sin herramientas» de respaldo: sin acceso al catálogo inventaban piezas
+    // y precios, y escribían el nombre de la herramienta en el texto para el cliente.
 ];
+
+/** Lo que ve el cliente si la IA no devuelve texto: nunca un error técnico. */
+const EMPTY_REPLY_FALLBACK = 'Perdona, no alcancé a procesar tu mensaje. ¿Me lo repites, por favor?';
+
+// Un modelo que responde 503/429 o se queda sin contestar suele seguir así un rato:
+// se le da un descanso para no hacer esperar a cada cliente hasta que vuelva a fallar.
+const MODEL_COOLDOWN_MS = 3 * 60 * 1000;
+const modelCooldownUntil = new Map<string, number>();
+
+/** Modelos de la cascada en orden, saltando los que están descansando (si todos lo están, se prueban igual). */
+export function availableModels(cascade: ModelEntry[], now = Date.now()): ModelEntry[] {
+    const ready = cascade.filter(entry => (modelCooldownUntil.get(entry.id) ?? 0) <= now);
+    return ready.length > 0 ? ready : cascade;
+}
+
+export function coolDownModel(modelId: string, now = Date.now()): void {
+    modelCooldownUntil.set(modelId, now + MODEL_COOLDOWN_MS);
+}
 
 async function createWithCascade(
     cascade: ModelEntry[],
@@ -43,7 +63,8 @@ async function createWithCascade(
     params: Omit<Parameters<OpenAI['chat']['completions']['create']>[0], 'model'>
 ): Promise<{ completion: OpenAI.Chat.ChatCompletion; usedTools: boolean }> {
     let lastError: any;
-    for (const entry of cascade) {
+    for (const entry of availableModels(cascade)) {
+        let modelFailed = false;
         for (const apiKey of apiKeys) {
             try {
                 // Sin reintentos internos del SDK: la cascada ya prueba otra key/modelo.
@@ -65,11 +86,17 @@ async function createWithCascade(
                 const isTimeout = err instanceof OpenAI.APIConnectionTimeoutError;
                 if (isTimeout || [400, 404, 429, 500, 502, 503, 504].includes(status)) {
                     logger.warn(`Cascada: ${entry.id} [key ...${apiKey.slice(-4)}] → ${isTimeout ? 'timeout' : `HTTP ${status}`}, probando siguiente...`);
-                    continue;
+                    // 400 puede ser de la key y 429 es la cuota de esa key: se prueba la otra.
+                    if (status === 400) continue;
+                    modelFailed = true;
+                    if (status === 429) continue;
+                    // Saturado, caído o sin respuesta: es el modelo, no la key. Siguiente modelo.
+                    break;
                 }
                 throw err;
             }
         }
+        if (modelFailed) coolDownModel(entry.id);
     }
     throw lastError;
 }
@@ -462,7 +489,7 @@ async function processUserMessage(
         }
 
         // ── Respuesta final ──
-        let finalContent = responseMessage.content || 'Hubo un error de procesamiento.';
+        let finalContent = responseMessage.content || EMPTY_REPLY_FALLBACK;
 
         if (finalContent.includes('Demasiadas solicitudes') || finalContent.includes('Too many requests')) {
             finalContent = 'Lo siento, estoy recibiendo muchas consultas en este momento. Por favor, escríbeme de nuevo en unos minutos.';
@@ -518,7 +545,7 @@ async function processUserMessage(
             splitMessages(finalContent).flatMap(msg => humanizeAndSplit(msg)),
             config.BOT_MAX_TEXT_MESSAGES,
         );
-        if (outMessages.length === 0) outMessages.push('Hubo un error de procesamiento.');
+        if (outMessages.length === 0) outMessages.push(EMPTY_REPLY_FALLBACK);
 
         // Guardar en historial el texto unificado (sin separadores)
         const textForHistory = outMessages.join(' ');
@@ -552,7 +579,7 @@ async function processUserMessage(
                     activeCascade, apiKeys, baseURL,
                     { messages: freshHistory, tools: botTools, tool_choice: 'auto' }
                 );
-                const retryContent = retryResponse.choices[0].message.content || 'Hubo un error de procesamiento.';
+                const retryContent = retryResponse.choices[0].message.content || EMPTY_REPLY_FALLBACK;
                 freshHistory.push({ role: 'assistant', content: retryContent });
                 await saveMemory(sessionId, storeId, senderPhone, freshHistory);
                 return singleResponse(retryContent);
