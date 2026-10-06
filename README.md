@@ -5,7 +5,7 @@ Bot conversacional con IA para atencion al cliente via WhatsApp Cloud API oficia
 ## Requisitos
 
 - **Node.js** >= 18
-- **PostgreSQL** (Supabase recomendado)
+- **Base de la tienda** (Supabase) con el esquema `bot` creado (`supabase/002_bot_schema.sql`)
 - **Google AI Studio** o proveedor compatible con la API de OpenAI
 - **Cuenta de Meta Developer** (para WhatsApp Cloud API)
 - **Cuenta de Resend** (para notificaciones por email, opcional)
@@ -43,9 +43,8 @@ Copia `.env.example` a `.env` y completa **todas** las variables marcadas como R
 |---|---|
 | `OPENAI_API_KEY` | API key del proveedor compatible configurado en `OPENAI_BASE_URL` |
 | `OPENAI_BASE_URL` | URL compatible con la API de OpenAI, por ejemplo Google AI Studio |
-| `SUPABASE_URL` | URL de tu proyecto en Supabase |
-| `SUPABASE_ANON_KEY` | Clave anon/publica de Supabase |
-| `SUPABASE_SERVICE_ROLE_KEY` | (Recomendado) Service role key |
+| `BOT_DATABASE_URL` | Conexion al esquema `bot` de la base de la tienda con el rol `bot_joyeria` (ver `supabase/README.md`) |
+| `BOT_DATABASE_CA_PATH` | (Opcional) Certificado de Supabase; por defecto `supabase-ca.crt` en la raiz |
 | `SITE_URL` | (Opcional) Tienda de donde se lee el catalogo. Default `https://www.mr18kts.online` |
 | `META_ACCESS_TOKEN` | Token de WhatsApp Cloud API |
 | `META_PHONE_ID` | Phone Number ID de WhatsApp |

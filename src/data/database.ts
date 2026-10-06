@@ -1,24 +1,25 @@
-import { supabase } from '../config/supabase';
+import { pool } from './pool';
 import { logger } from '../utils/logger';
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Sesiones de chat y citas sobre Supabase (Postgres)
-//  Tablas: sessions, appointments
-
+//  Sesiones de chat y citas en la base de la tienda, esquema `bot`
+//  Tablas: bot.sessions, bot.appointments (supabase/002_bot_schema.sql)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const getSession = async (sessionId: string) => {
-    if (!supabase) return { isPaused: false };
-    try {
-        const { data, error } = await supabase
-            .from('sessions')
-            .select('*')
-            .eq('session_id', sessionId)
-            .maybeSingle();
+/** El historial se guarda como jsonb: node-postgres convertiría un array JS en un array de Postgres. */
+function toJson(value: unknown): string {
+    return JSON.stringify(value ?? []);
+}
 
-        if (error) throw error;
+export const getSession = async (sessionId: string) => {
+    if (!pool) return { isPaused: false };
+    try {
+        const { rows } = await pool.query(
+            'select * from bot.sessions where session_id = $1',
+            [sessionId],
+        );
+        const data = rows[0];
         if (data) {
-            // Misma forma que devolvía Firestore (doc.data())
             return {
                 sessionId: data.session_id,
                 storeId: data.store_id,
@@ -29,163 +30,143 @@ export const getSession = async (sessionId: string) => {
                 updatedAt: data.updated_at ? new Date(data.updated_at) : null,
             };
         }
-    } catch (e) {}
+    } catch (e: any) {
+        logger.error(`Error leyendo sesión: ${e.message}`);
+    }
     return { isPaused: false };
 };
 
 export const setSessionPause = async (sessionId: string, isPaused: boolean) => {
-    if (!supabase) return true;
+    if (!pool) return true;
     try {
-        const { error } = await supabase
-            .from('sessions')
-            .upsert({ session_id: sessionId, is_paused: isPaused }, { onConflict: 'session_id' });
-
-        if (error) throw error;
+        await pool.query(
+            `insert into bot.sessions (session_id, is_paused) values ($1, $2)
+             on conflict (session_id) do update set is_paused = excluded.is_paused`,
+            [sessionId, isPaused],
+        );
         return true;
-    } catch (e) {
+    } catch (e: any) {
+        logger.error(`Error pausando sesión: ${e.message}`);
         return false;
     }
 };
 
-export const checkRateLimit = async (sessionId: string, maxMessages: number) => {
+export const checkRateLimit = async (_sessionId: string, _maxMessages: number) => {
     return { allowed: true };
 };
 
-export const incrementMessageCount = async (sessionId: string) => {
+export const incrementMessageCount = async (_sessionId: string) => {
     return true;
 };
 
 export const getAllSessions = async (storeId?: string) => {
-    if (!supabase) return [];
+    if (!pool) return [];
     try {
-        const { data, error } = await supabase
-            .from('sessions')
-            .select('*')
-            .order('updated_at', { ascending: false });
+        const { rows } = storeId
+            ? await pool.query('select * from bot.sessions where store_id = $1 order by updated_at desc', [storeId])
+            : await pool.query('select * from bot.sessions order by updated_at desc');
 
-        if (error) throw error;
-
-        return (data || []).map(row => ({
+        return rows.map(row => ({
             id: row.session_id,
             sessionId: row.session_id,
             storeId: row.store_id || 'default',
             phone: row.sender_phone || row.session_id.split('_')[1] || row.session_id,
             isPaused: row.is_paused || false,
             history: row.messages || [],
-            updatedAt: row.updated_at ? new Date(row.updated_at) : new Date()
+            updatedAt: row.updated_at ? new Date(row.updated_at) : new Date(),
         }));
-    } catch (e) {
-        logger.error(`Error getting all sessions: ${e}`);
+    } catch (e: any) {
+        logger.error(`Error getting all sessions: ${e.message}`);
         return [];
     }
 };
 
 export const deleteSession = async (sessionId: string) => {
-    if (!supabase) return true;
+    if (!pool) return true;
     try {
-        const { error } = await supabase
-            .from('sessions')
-            .delete()
-            .eq('session_id', sessionId);
-
-        if (error) throw error;
+        await pool.query('delete from bot.sessions where session_id = $1', [sessionId]);
         return true;
-    } catch (e) {
+    } catch (e: any) {
+        logger.error(`Error borrando sesión: ${e.message}`);
         return false;
     }
 };
 
 export const getSessionLastActivity = async (sessionId: string): Promise<Date | null> => {
-    if (!supabase) return null;
+    if (!pool) return null;
     try {
-        const { data, error } = await supabase
-            .from('sessions')
-            .select('updated_at')
-            .eq('session_id', sessionId)
-            .maybeSingle();
-
-        if (error) throw error;
-        if (data?.updated_at) {
-            return new Date(data.updated_at);
-        }
-    } catch (e) {
-        logger.error(`Error getting session last activity: ${e}`);
+        const { rows } = await pool.query('select updated_at from bot.sessions where session_id = $1', [sessionId]);
+        if (rows[0]?.updated_at) return new Date(rows[0].updated_at);
+    } catch (e: any) {
+        logger.error(`Error getting session last activity: ${e.message}`);
     }
     return null;
 };
 
 export const clearSession = async (sessionId: string, storeId: string, senderPhone: string, systemPrompt: string) => {
-    if (!supabase) return true;
+    if (!pool) return true;
     try {
         const freshMessages = [{ role: 'system', content: systemPrompt }];
-        const { error } = await supabase
-            .from('sessions')
-            .upsert({
-                session_id: sessionId,
-                store_id: storeId,
-                sender_phone: senderPhone,
-                messages: freshMessages,
-                has_appointment: false,
-                updated_at: new Date().toISOString()
-            }, { onConflict: 'session_id' });
-
-        if (error) throw error;
+        await pool.query(
+            `insert into bot.sessions (session_id, store_id, sender_phone, messages, has_appointment, updated_at)
+             values ($1, $2, $3, $4::jsonb, false, now())
+             on conflict (session_id) do update set
+                store_id = excluded.store_id,
+                sender_phone = excluded.sender_phone,
+                messages = excluded.messages,
+                has_appointment = false,
+                updated_at = now()`,
+            [sessionId, storeId, senderPhone, toJson(freshMessages)],
+        );
         return true;
-    } catch (e) {
-        logger.error(`Error clearing session: ${e}`);
+    } catch (e: any) {
+        logger.error(`Error clearing session: ${e.message}`);
         return false;
     }
 };
 
 export const setSessionAppointmentFlag = async (sessionId: string, hasAppointment: boolean) => {
-    if (!supabase) return true;
+    if (!pool) return true;
     try {
-        const { error } = await supabase
-            .from('sessions')
-            .upsert({ session_id: sessionId, has_appointment: hasAppointment }, { onConflict: 'session_id' });
-
-        if (error) throw error;
+        await pool.query(
+            `insert into bot.sessions (session_id, has_appointment) values ($1, $2)
+             on conflict (session_id) do update set has_appointment = excluded.has_appointment`,
+            [sessionId, hasAppointment],
+        );
         return true;
-    } catch (e) {
-        logger.error(`Error setting session appointment flag: ${e}`);
+    } catch (e: any) {
+        logger.error(`Error setting session appointment flag: ${e.message}`);
         return false;
     }
 };
 
 export const getMemory = async (sessionId: string): Promise<any[]> => {
-    if (!supabase) return [];
+    if (!pool) return [];
     try {
-        const { data, error } = await supabase
-            .from('sessions')
-            .select('messages')
-            .eq('session_id', sessionId)
-            .maybeSingle();
-
-        if (error) throw error;
-        if (data) return data.messages || [];
-    } catch (e) {}
+        const { rows } = await pool.query('select messages from bot.sessions where session_id = $1', [sessionId]);
+        if (rows[0]) return Array.isArray(rows[0].messages) ? rows[0].messages : [];
+    } catch (e: any) {
+        logger.error(`Error leyendo historial: ${e.message}`);
+    }
     return [];
 };
 
 export const saveMemory = async (sessionId: string, storeId: string, senderPhone: string, messages: any[]) => {
-    if (!supabase) return true;
+    if (!pool) return true;
     try {
-        // Sanitizar array: solo JSON puro
-        const cleanMessages = JSON.parse(JSON.stringify(messages));
-        const { error } = await supabase
-            .from('sessions')
-            .upsert({
-                session_id: sessionId,
-                store_id: storeId,
-                sender_phone: senderPhone,
-                messages: cleanMessages,
-                updated_at: new Date().toISOString()
-            }, { onConflict: 'session_id' });
-
-        if (error) throw error;
+        await pool.query(
+            `insert into bot.sessions (session_id, store_id, sender_phone, messages, updated_at)
+             values ($1, $2, $3, $4::jsonb, now())
+             on conflict (session_id) do update set
+                store_id = excluded.store_id,
+                sender_phone = excluded.sender_phone,
+                messages = excluded.messages,
+                updated_at = now()`,
+            [sessionId, storeId, senderPhone, toJson(messages)],
+        );
         return true;
-    } catch (e) {
-        logger.error(`Error saving memory: ${e}`);
+    } catch (e: any) {
+        logger.error(`Error saving memory: ${e.message}`);
         return false;
     }
 };
@@ -205,33 +186,35 @@ export interface AppointmentData {
 }
 
 export const saveAppointment = async (storeId: string, senderPhone: string, data: AppointmentData) => {
-    if (!supabase) return false;
+    if (!pool) return false;
     try {
         const appointmentId = `${storeId}_${senderPhone}_${data.date}_${data.time.replace(':', '')}`;
-        const { error } = await supabase
-            .from('appointments')
-            .upsert({
-                id: appointmentId,
-                store_id: storeId,
-                sender_phone: senderPhone,
-                client_name: data.clientName || '',
-                city: data.city || '',
-                date: data.date || '',
-                time: data.time || '',
-                appointment_type: data.appointmentType || '',
-                property_reference: data.propertyReference || '',
-                address: data.address || '',
-                phone: data.phone || '',
-                calendar_event_id: data.calendarEventId || null,
-                status: data.status || 'scheduled',
-                created_at: data.createdAt instanceof Date ? data.createdAt.toISOString() : new Date().toISOString(),
-                updated_at: new Date().toISOString()
-            }, { onConflict: 'id' });
-
-        if (error) throw error;
+        await pool.query(
+            `insert into bot.appointments (
+                id, store_id, sender_phone, client_name, city, date, time, appointment_type,
+                property_reference, address, phone, calendar_event_id, status, created_at, updated_at
+             ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now())
+             on conflict (id) do update set
+                client_name = excluded.client_name,
+                city = excluded.city,
+                appointment_type = excluded.appointment_type,
+                property_reference = excluded.property_reference,
+                address = excluded.address,
+                phone = excluded.phone,
+                calendar_event_id = excluded.calendar_event_id,
+                status = excluded.status,
+                updated_at = now()`,
+            [
+                appointmentId, storeId, senderPhone,
+                data.clientName || '', data.city || '', data.date || '', data.time || '',
+                data.appointmentType || '', data.propertyReference || '', data.address || '',
+                data.phone || '', data.calendarEventId || null, data.status || 'scheduled',
+                data.createdAt instanceof Date ? data.createdAt : new Date(),
+            ],
+        );
         return true;
-    } catch (e) {
-        logger.error(`Error saving appointment: ${e}`);
+    } catch (e: any) {
+        logger.error(`Error saving appointment: ${e.message}`);
         return false;
     }
 };
@@ -248,20 +231,17 @@ export type PendingAppointment = AppointmentData & {
 };
 
 export const getPendingAppointment = async (storeId: string, senderPhone: string): Promise<PendingAppointment | null> => {
-    if (!supabase) return null;
+    if (!pool) return null;
     try {
-        const { data, error } = await supabase
-            .from('appointments')
-            .select('*')
-            .eq('store_id', storeId)
-            .eq('sender_phone', senderPhone)
-            .eq('status', 'scheduled');
-
-        if (error) throw error;
-        if (!data || data.length === 0) return null;
+        const { rows } = await pool.query(
+            `select * from bot.appointments
+             where store_id = $1 and sender_phone = $2 and status = 'scheduled'
+             order by date, time`,
+            [storeId, senderPhone],
+        );
 
         const now = new Date();
-        for (const row of data) {
+        for (const row of rows) {
             if (row.date && row.time) {
                 const appointmentDateTime = new Date(`${row.date}T${row.time}:00-05:00`);
                 if (appointmentDateTime > now) return {
@@ -282,8 +262,8 @@ export const getPendingAppointment = async (storeId: string, senderPhone: string
                 };
             }
         }
-    } catch (e) {
-        logger.error(`Error checking pending appointment: ${e}`);
+    } catch (e: any) {
+        logger.error(`Error checking pending appointment: ${e.message}`);
     }
     return null;
 };
@@ -296,24 +276,21 @@ export const updateAppointmentSchedule = async (
     time: string,
     calendarEventId?: string | null,
 ): Promise<boolean> => {
-    if (!supabase) return false;
+    if (!pool) return false;
     try {
-        const { error } = await supabase
-            .from('appointments')
-            .update({
-                date,
-                time,
-                ...(calendarEventId !== undefined ? { calendar_event_id: calendarEventId } : {}),
-                status: 'scheduled',
-                updated_at: new Date().toISOString(),
-            })
-            .eq('id', appointmentId)
-            .eq('store_id', storeId)
-            .eq('sender_phone', senderPhone);
-        if (error) throw error;
-        return true;
-    } catch (e) {
-        logger.error(`Error updating appointment: ${e}`);
+        const { rowCount } = await pool.query(
+            `update bot.appointments set
+                date = $4,
+                time = $5,
+                calendar_event_id = case when $6::boolean then $7 else calendar_event_id end,
+                status = 'scheduled',
+                updated_at = now()
+             where id = $1 and store_id = $2 and sender_phone = $3`,
+            [appointmentId, storeId, senderPhone, date, time, calendarEventId !== undefined, calendarEventId ?? null],
+        );
+        return (rowCount ?? 0) > 0;
+    } catch (e: any) {
+        logger.error(`Error updating appointment: ${e.message}`);
         return false;
     }
 };

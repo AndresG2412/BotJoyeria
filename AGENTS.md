@@ -3,7 +3,7 @@
 Bot conversacional con IA que atiende clientes de la joyería Mr. 18Kilates (Pitalito, Colombia) por WhatsApp Cloud API (Meta). También Telegram y panel web de administración. Producción: VPS Windows con PM2 (flujo completo en `DEPLOY.md`).
 
 ## Stack
-TypeScript + Express. Catálogo leído de la API pública de la tienda (`SITE_URL`, por defecto https://www.mr18kts.online). Sesiones y citas en Supabase vía `supabase-js`; las tiendas del bot en `data/local-stores.json` (mock en `src/data/connection.ts`). IA vía API compatible con OpenAI (Google AI Studio, configurable con `OPENAI_BASE_URL`/`OPENAI_MODEL`). Google Calendar (citas), Resend (emails). Sin QR ni Puppeteer: Meta entrega a un webhook y el bot responde con Graph API.
+TypeScript + Express. Catálogo leído de la API pública de la tienda (`SITE_URL`, por defecto https://www.mr18kts.online). Sesiones y citas en la base de la tienda (Supabase), esquema `bot`, con `pg` y el rol restringido `bot_joyeria` (`src/data/pool.ts`, `supabase/002_bot_schema.sql`); las tiendas del bot en `data/local-stores.json` (mock en `src/data/connection.ts`). IA vía API compatible con OpenAI (Google AI Studio, configurable con `OPENAI_BASE_URL`/`OPENAI_MODEL`). Google Calendar (citas), Resend (emails). Sin QR ni Puppeteer: Meta entrega a un webhook y el bot responde con Graph API.
 
 ## Comandos
 ```bash
@@ -39,6 +39,8 @@ El bot guarda nombre y teléfono de clientes para citas. Aplica la Ley 1581 (Col
 - La base de la tienda (Payload) tiene tablas `products` y `categorias` con OTRA estructura: el bot nunca debe escribir en ellas ni crear tablas con esos nombres. El `migrate.ts` que las borraba se eliminó.
 - Fechas de citas: usar `todayInBogota`, `parseAppointmentDate` y `appointmentInstant` (`policies.ts`); nunca `new Date(y, m, d, h)` con la zona del servidor.
 - `.env` y `google-service-account.json` jamás al repo (ya están en `.gitignore`).
+- La conexión a la base verifica TLS con la CA de Supabase (`supabase-ca.crt`). Nunca usar `rejectUnauthorized: false`: si falta el certificado, el bot no se conecta.
+- Cambios de esquema: editar `supabase/002_bot_schema.sql` (o agregar un 003) y aplicarlo en el SQL Editor; el rol `bot_joyeria` no puede crear tablas.
 - WhatsApp solo acepta JPEG/PNG: las WebP del catálogo se convierten con `sharp` al enviar.
 - Mensajes seguidos del mismo cliente se agrupan (3 s de silencio, máx. 10 s) antes de llamar a la IA; hay una cola por cliente y concurrencia limitada (`WHATSAPP_BATCH_*`, `BOT_MAX_*`).
 - El webhook exige firma válida (`META_APP_SECRET`) y token de usuario del sistema de Meta (los temporales caducan en 24 h).
