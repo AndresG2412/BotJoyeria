@@ -16,6 +16,13 @@ import { initializeSupabase } from './config/supabase';
 import { db } from './data/connection';
 import { users, stores } from './data/schema';
 
+/** Comparación en tiempo constante para no filtrar la contraseña por tiempos de respuesta. */
+function safeEqual(a: unknown, b: string): boolean {
+    const left = crypto.createHash('sha256').update(String(a ?? '')).digest();
+    const right = crypto.createHash('sha256').update(b).digest();
+    return crypto.timingSafeEqual(left, right);
+}
+
 function bootstrap() {
     logger.info(`Iniciando AI Bot para Ecommerce: ${config.STORE_NAME}`);
 
@@ -84,7 +91,7 @@ function bootstrap() {
             }
 
             // Fallback a superadmin del .env si la tabla está vacía o es admin root
-            if (username === config.DASHBOARD_USER && password === config.DASHBOARD_PASSWORD) {
+            if (config.DASHBOARD_PASSWORD && safeEqual(username, config.DASHBOARD_USER) && safeEqual(password, config.DASHBOARD_PASSWORD)) {
                 const token = jwt.sign({ user: username, role: 'superadmin', storeId: null }, config.JWT_SECRET, { expiresIn: '24h' });
                 res.cookie('auth_token', token, {
                     httpOnly: true,

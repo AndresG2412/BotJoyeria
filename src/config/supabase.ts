@@ -34,16 +34,13 @@ function createSupabaseClient(): SupabaseClient | null {
 
 export const supabase = createSupabaseClient();
 
-/** Nombre del bucket de Storage para las imágenes de productos */
-export const PRODUCT_IMAGES_BUCKET = 'productos';
-
 /**
  * Verifica la conexión con Supabase al arrancar.
  */
 export const initializeSupabase = async (): Promise<boolean> => {
     if (!supabase) return false;
     try {
-        const { error } = await supabase.from('categorias').select('id', { head: true, count: 'exact' });
+        const { error } = await supabase.from('sessions').select('session_id', { head: true, count: 'exact' });
         if (error) throw error;
         logger.info('✅ Supabase conectado exitosamente a la base de datos!');
         return true;

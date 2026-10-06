@@ -17,6 +17,39 @@ export const APPOINTMENT_ADDRESS = 'Calle 4 #1-31';
 export const APPOINTMENT_DURATION_MINUTES = 60;
 export const APPOINTMENT_HOURS = 'lunes a viernes, de 8:00 AM a 12:00 PM y de 2:00 PM a 6:00 PM';
 
+/** Colombia no tiene horario de verano: siempre UTC-5. */
+const BOGOTA_UTC_OFFSET = '-05:00';
+
+/** Fecha de hoy en Colombia (YYYY-MM-DD), sin importar la zona horaria del servidor. */
+export function todayInBogota(now = new Date()): string {
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Bogota', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(now);
+}
+
+/** Valida una fecha YYYY-MM-DD real (rechaza 2026-02-30) y la devuelve como día local. */
+export function parseAppointmentDate(value: string): Date | null {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec((value || '').trim());
+    if (!match) return null;
+    const [year, month, day] = match.slice(1).map(Number);
+    const date = new Date(year, month - 1, day);
+    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+    return date;
+}
+
+/** La cita debe ser desde mañana (hora de Colombia) en adelante. */
+export function isAfterTodayInBogota(date: string, now = new Date()): boolean {
+    return date.trim() > todayInBogota(now);
+}
+
+/** Instante exacto de la cita en Colombia, para Google Calendar. */
+export function appointmentInstant(date: string, time: string): Date {
+    const [hour, minute] = time.trim().split(':').map(Number);
+    const hh = String(hour).padStart(2, '0');
+    const mm = String(minute).padStart(2, '0');
+    return new Date(`${date.trim()}T${hh}:${mm}:00${BOGOTA_UTC_OFFSET}`);
+}
+
 export function isValidAppointmentTime(time: string): boolean {
     const match = /^(\d{1,2}):(\d{2})$/.exec((time || '').trim());
     if (!match) return false;

@@ -3,7 +3,7 @@
 Bot conversacional con IA que atiende clientes de la joyería Mr. 18Kilates (Pitalito, Colombia) por WhatsApp Cloud API (Meta). También Telegram y panel web de administración. Producción: VPS Windows con PM2 (flujo completo en `DEPLOY.md`).
 
 ## Stack
-TypeScript + Express. Supabase (Postgres + Storage) vía Drizzle ORM. IA vía API compatible con OpenAI (Google AI Studio, configurable con `OPENAI_BASE_URL`/`OPENAI_MODEL`). Google Calendar (citas), Resend (emails). Sin QR ni Puppeteer: Meta entrega a un webhook y el bot responde con Graph API.
+TypeScript + Express. Catálogo leído de la API pública de la tienda (`SITE_URL`, por defecto https://www.mr18kts.online). Sesiones y citas en Supabase vía `supabase-js`; las tiendas del bot en `data/local-stores.json` (mock en `src/data/connection.ts`). IA vía API compatible con OpenAI (Google AI Studio, configurable con `OPENAI_BASE_URL`/`OPENAI_MODEL`). Google Calendar (citas), Resend (emails). Sin QR ni Puppeteer: Meta entrega a un webhook y el bot responde con Graph API.
 
 ## Comandos
 ```bash
@@ -13,17 +13,14 @@ npm run build                 # tsc -> dist/
 npm start                     # node dist/app.js (requiere build previo)
 npm test                      # todos los tests: tsx --test tests/*.test.ts
 npx tsx --test tests/policies.test.ts   # un solo archivo de tests
-npx ts-node migrate.ts        # migraciones: ¡DESTRUCTIVO! (ver Gotchas)
-npx drizzle-kit generate       # generar SQL nuevo en drizzle/ tras editar schema.ts
 ```
-No existe `npm run db:migrate` (referencia vieja en `.env.example`); el comando real es el de arriba.
 Antes de un commit: `npm run build && npm test`.
 
 ## Estructura
 - `src/app.ts` — entrypoint: Express y arranque de bots.
-- `src/bot/` — cerebro: `agent.ts` (IA), `prompts.ts` (system prompt con el flujo fijo), `tools.ts` (herramientas del LLM), `policies.ts` (reglas deterministas), `remarketing.ts`.
+- `src/bot/` — cerebro: `agent.ts` (IA), `prompts.ts` (system prompt con el flujo fijo), `tools.ts` (herramientas del LLM), `policies.ts` (reglas deterministas, fechas en hora de Colombia).
 - `src/channels/` — `whatsapp-cloud.ts` (webhook + Graph API + batching), `telegram.ts`, `whatsapp-health.ts`.
-- `src/data/` — `schema.ts` (Drizzle), `catalog.ts` (búsqueda), `database.ts` (sesiones y citas), `connection.ts`.
+- `src/data/` — `catalog.ts` (catálogo de la tienda, solo lectura, con caché), `database.ts` (sesiones y citas), `connection.ts` (tiendas en JSON local), `schema.ts` (nombres de campos del mock).
 - `src/routes/dashboard.ts` — API del panel. `public/` — panel web. `tests/` — node:test.
 
 ## Reglas del bot (invariantes; no romperlas al tocar código)
@@ -32,13 +29,15 @@ Antes de un commit: `npm run build && npm test`.
 - Una pieza y una imagen por turno; peticiones de "todo el catálogo" redirigen a https://www.mr18kts.online (lógica en `policies.ts`).
 - Citas: solo presenciales en Pitalito, Calle 4 #1-31, horario validado por `isValidAppointmentTime` (lun–vie 8–12 y 14–18, en punto), 60 minutos.
 - Nunca mostrar al cliente errores técnicos, stack traces ni detalles internos.
-- Archivos de clientes no válidos no se guardan; las imágenes viven en Supabase Storage (Cloudinary es legacy), no en Postgres.
+- Archivos de clientes no válidos no se guardan. Las fotos de las piezas son las de la tienda (WebP tamaño «tarjeta»); el bot no sube ni guarda imágenes.
+- El catálogo se administra SOLO en el panel de la tienda (/admin). El panel del bot no crea, edita ni borra piezas o categorías (responde 410).
 
 ## Datos personales
-El bot guarda nombre y teléfono de clientes para citas. Aplica la Ley 1581 (Colombia): minimizar lo que se guarda y no registrar datos personales en logs.
+El bot guarda nombre y teléfono de clientes para citas. Aplica la Ley 1581 (Colombia): minimizar lo que se guarda y no registrar datos personales en logs. `logger` enmascara los números de celular (deja los últimos 4) y `executeTool` registra solo los nombres de los argumentos.
 
 ## Gotchas
-- `migrate.ts` hace `DROP TABLE` de products/sessions/stores antes de migrar: destruye datos. Ejecutarlo solo a propósito y con respaldo.
+- La base de la tienda (Payload) tiene tablas `products` y `categorias` con OTRA estructura: el bot nunca debe escribir en ellas ni crear tablas con esos nombres. El `migrate.ts` que las borraba se eliminó.
+- Fechas de citas: usar `todayInBogota`, `parseAppointmentDate` y `appointmentInstant` (`policies.ts`); nunca `new Date(y, m, d, h)` con la zona del servidor.
 - `.env` y `google-service-account.json` jamás al repo (ya están en `.gitignore`).
 - WhatsApp solo acepta JPEG/PNG: las WebP del catálogo se convierten con `sharp` al enviar.
 - Mensajes seguidos del mismo cliente se agrupan (3 s de silencio, máx. 10 s) antes de llamar a la IA; hay una cola por cliente y concurrencia limitada (`WHATSAPP_BATCH_*`, `BOT_MAX_*`).

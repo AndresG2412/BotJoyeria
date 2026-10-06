@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import path from 'path';
+import crypto from 'crypto';
 
 // Cargar variables de entorno desde .env
 dotenv.config({ path: path.resolve(process.cwd(), '.env') });
@@ -18,7 +19,8 @@ export const config = {
     STORE_NAME: process.env.STORE_NAME || 'nuestro ecommerce',
     PORT: process.env.PORT || 3000,
     DASHBOARD_USER: process.env.DASHBOARD_USER || 'admin',
-    DASHBOARD_PASSWORD: process.env.DASHBOARD_PASSWORD || 'admin123',
+    // Sin contraseña en el .env no se puede entrar al panel (antes caía en 'admin123').
+    DASHBOARD_PASSWORD: process.env.DASHBOARD_PASSWORD || '',
     META_ACCESS_TOKEN: process.env.META_ACCESS_TOKEN || '',
     META_PHONE_ID: process.env.META_PHONE_ID || '',
     META_WABA_ID: process.env.META_WABA_ID || '',
@@ -27,12 +29,16 @@ export const config = {
     META_API_VERSION: process.env.META_API_VERSION || 'v26.0',
     NGROK_AUTHTOKEN: process.env.NGROK_AUTHTOKEN || '',
     NGROK_DOMAIN: process.env.NGROK_DOMAIN || '',
-    JWT_SECRET: process.env.JWT_SECRET || 'super-secreto-ai-bot-99',
+    // Sin JWT_SECRET se genera uno al arrancar: las sesiones del panel se cierran al reiniciar.
+    JWT_SECRET: process.env.JWT_SECRET || crypto.randomBytes(48).toString('hex'),
     CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME || '',
     CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY || '',
     CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET || '',
     RESEND_API_KEY: process.env.RESEND_API_KEY || '',
-    // Supabase (base de datos + Storage de imágenes)
+    // Tienda pública: el catálogo se lee de su API (solo lo publicado, sin credenciales)
+    SITE_URL: process.env.SITE_URL || 'https://www.mr18kts.online',
+    CATALOG_CACHE_MS: intFromEnv('CATALOG_CACHE_MS', 5 * 60 * 1000),
+    // Supabase (sesiones de chat y citas del bot)
     SUPABASE_URL: process.env.SUPABASE_URL || '',
     SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY || '',
     SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
@@ -51,6 +57,14 @@ export const config = {
 // Validación simple
 if (!config.OPENAI_API_KEY) {
     console.warn("⚠️ ADVERTENCIA: No se ha configurado OPENAI_API_KEY en el archivo .env!");
+}
+if (!config.DASHBOARD_PASSWORD) {
+    console.warn("⚠️ ADVERTENCIA: Falta DASHBOARD_PASSWORD: el panel no aceptará ingresos hasta configurarla.");
+} else if (config.DASHBOARD_PASSWORD === 'admin123' || config.DASHBOARD_PASSWORD.length < 10) {
+    console.warn("⚠️ ADVERTENCIA: DASHBOARD_PASSWORD es débil; usa al menos 10 caracteres.");
+}
+if (!process.env.JWT_SECRET) {
+    console.warn("⚠️ ADVERTENCIA: Falta JWT_SECRET; se usará uno temporal y las sesiones del panel se cerrarán al reiniciar.");
 }
 if (!config.META_ACCESS_TOKEN) {
     console.warn("⚠️ ADVERTENCIA: No se ha configurado META_ACCESS_TOKEN para la WhatsApp Cloud API.");

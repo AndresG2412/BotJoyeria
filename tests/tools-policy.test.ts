@@ -18,3 +18,11 @@ test('limita las imágenes a una por respuesta', () => {
     assert.deepEqual(limitProductImages(images, 1, 3), []);
     assert.deepEqual(limitProductImages(images, 0, 1), ['a']);
 });
+
+test('normaliza celulares y fijos colombianos', async () => {
+    const { normalizeColombianMobile } = await import('../src/bot/tools');
+    assert.equal(normalizeColombianMobile('+57 313 453 2440'), '3134532440');
+    assert.equal(normalizeColombianMobile('6088365000'), '6088365000');
+    assert.equal(normalizeColombianMobile('12345'), null);
+    assert.equal(normalizeColombianMobile('1234567890'), null);
+});
