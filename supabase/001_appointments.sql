@@ -3,7 +3,7 @@
 
 create table if not exists public.appointments (
     id text primary key,
-    store_id text not null references public.stores(id) on delete cascade,
+    store_id text not null,
     sender_phone text not null,
     client_name text not null default '',
     city text not null default 'Pitalito',

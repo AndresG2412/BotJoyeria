@@ -579,7 +579,7 @@ export async function executeTool(
                         confirmed_time: time,
                         city: effectiveCity,
                         contact_info: contactInfo,
-                        instructions_for_ai: `La cita presencial quedó registrada en ${effectiveCity}, ${effectiveAddress}. Confirma al cliente la fecha ${date} y hora ${time}. Explica que dura aproximadamente una hora, aunque la asesoría puede tardar más si aún está explorando opciones. ${contactInfo}`
+                        instructions_for_ai: `La cita presencial quedó registrada en ${effectiveCity}, ${effectiveAddress}. Confirma al cliente la fecha ${date} y hora ${time}. Recuérdale que solo atendemos en ${effectiveCity} y que un asesor lo llamará horas antes para confirmar. Explica que dura aproximadamente una hora, aunque la asesoría puede tardar más si aún está explorando opciones. ${contactInfo}`
                     });
 
                 } catch (calErr: any) {

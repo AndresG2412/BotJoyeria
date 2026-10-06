@@ -15,6 +15,7 @@ import OpenAI from 'openai';
 import { supabase, PRODUCT_IMAGES_BUCKET } from '../config/supabase';
 import { config } from '../config/env';
 import { logger } from '../utils/logger';
+import { getCalendarHealth } from '../utils/calendar-health';
 import crypto from 'crypto';
 import { DEFAULT_STORE_SYSTEM_PROMPT } from '../bot/prompts';
 
@@ -199,6 +200,28 @@ dashboardRouter.get('/api/whatsapp/health/:storeId', async (req: any, res: Respo
 
     try {
         res.json(await getStoreWhatsAppHealth(storeId));
+    } catch (e: any) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ─────────────────────────────────────────
+//  GOOGLE CALENDAR — salud
+// ─────────────────────────────────────────
+
+/**
+ * GET /api/calendar/health/:storeId
+ * Reporta si el calendario del administrador está accesible por la cuenta de
+ * servicio. Si no está compartido, devuelve el client_email exacto a autorizar.
+ */
+dashboardRouter.get('/api/calendar/health/:storeId', async (req: any, res: Response) => {
+    const { storeId } = req.params;
+    if (!isSuperAdmin(req) && req.user.storeId !== storeId)
+        return res.status(403).json({ error: 'Prohibido' });
+
+    try {
+        const store = await db.query.stores.findFirst({ where: eq(stores.id, storeId) });
+        res.json(await getCalendarHealth(store?.adminCalendarEmail));
     } catch (e: any) {
         res.status(500).json({ error: e.message });
     }
