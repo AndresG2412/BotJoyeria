@@ -24,7 +24,8 @@ async function main(): Promise<void> {
     await deleteSession(sessionId);
     const borrado = (await getMemory(sessionId)).length === 0;
 
-    const ok = leido.length === 2 && leido[1].content === 'Hola' && sesion.isPaused === true && borrado;
+    // Las instrucciones de la IA (role system) no se guardan: queda solo el mensaje del cliente.
+    const ok = leido.length === 1 && leido[0].content === 'Hola' && sesion.isPaused === true && borrado;
     console.log(`Sesiones (guardar, pausar, leer, borrar): ${ok ? 'OK' : 'FALLÓ'}`);
 
     let aislado = false;
