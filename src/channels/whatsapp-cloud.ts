@@ -6,7 +6,7 @@ import { logger, maskPhone } from '../utils/logger';
 import { config } from '../config/env';
 import { handleUserMessage } from '../bot/agent';
 import { db } from '../data/connection';
-import { getSession, setSessionPause, checkRateLimit, incrementMessageCount, getMemory, saveMemory, getAllSessions } from '../data/database';
+import { getSession, setSessionPause, checkRateLimit, incrementMessageCount, getMemory, saveMemory, getStalePausedSessions } from '../data/database';
 import { SYSTEM_PROMPT } from '../bot/prompts';
 import { PendingImage } from '../bot/tools';
 import { isUnsupportedInboundType, UNSUPPORTED_FILE_RESPONSE } from '../bot/policies';
@@ -664,19 +664,10 @@ export function initializeWhatsAppCloud(): void {
         inactivityJobRunning = true;
 
         try {
-            const sessions = await getAllSessions();
-            const now = Date.now();
-
-            for (const session of sessions) {
-                if (!session.isPaused || !session.history?.length) continue;
-                const lastMessage = session.history[session.history.length - 1];
-                if (lastMessage?.role !== 'user') continue;
-
-                const updatedAt = session.updatedAt ? new Date(session.updatedAt).getTime() : 0;
-                if (updatedAt && now - updatedAt >= 5 * 60 * 1000) {
-                    await resumeChat(session.sessionId);
-                    await processUnansweredMessage(session.sessionId, session.storeId, session.phone);
-                }
+            // Chats que un asesor pausó, con mensajes del cliente sin responder hace 5 minutos.
+            for (const session of await getStalePausedSessions(5)) {
+                await resumeChat(session.sessionId);
+                await processUnansweredMessage(session.sessionId, session.storeId, session.phone);
             }
         } catch (error: any) {
             logger.error(`Error en job de sesiones Cloud API: ${error.message}`);

@@ -45,6 +45,7 @@ Copia `.env.example` a `.env` y completa **todas** las variables marcadas como R
 | `OPENAI_BASE_URL` | URL compatible con la API de OpenAI, por ejemplo Google AI Studio |
 | `BOT_DATABASE_URL` | Conexion al esquema `bot` de la base de la tienda con el rol `bot_joyeria` (ver `supabase/README.md`) |
 | `BOT_DATABASE_CA_PATH` | (Opcional) Certificado de Supabase; por defecto `supabase-ca.crt` en la raiz |
+| `BOT_SESSION_RETENTION_DAYS` | (Opcional) Dias sin actividad tras los que se borra un chat (Ley 1581). Default 90; las citas se conservan |
 | `SITE_URL` | (Opcional) Tienda de donde se lee el catalogo. Default `https://www.mr18kts.online` |
 | `META_ACCESS_TOKEN` | Token de WhatsApp Cloud API |
 | `META_PHONE_ID` | Phone Number ID de WhatsApp |
