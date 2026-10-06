@@ -26,3 +26,8 @@ test('normaliza celulares y fijos colombianos', async () => {
     assert.equal(normalizeColombianMobile('12345'), null);
     assert.equal(normalizeColombianMobile('1234567890'), null);
 });
+
+test('ninguna cascada usa modelos sin herramientas (inventaban piezas y precios)', async () => {
+    const source = (await import('node:fs')).readFileSync('src/bot/agent.ts', 'utf8');
+    assert.equal(/tools:\s*false/.test(source), false);
+});
