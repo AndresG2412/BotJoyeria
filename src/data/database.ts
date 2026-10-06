@@ -22,7 +22,7 @@ export function withoutSystemPrompt(messages: any[]): any[] {
 
 /** Lo justo para el panel: nunca se lee el historial completo de todas las conversaciones. */
 const SESSION_SUMMARY_COLUMNS = `
-    session_id, store_id, sender_phone, is_paused, has_appointment, updated_at,
+    session_id, store_id, sender_phone, is_paused, has_appointment, human_until, updated_at,
     (select jsonb_build_object('role', e.m->>'role', 'content', left(e.m->>'content', 80))
        from jsonb_array_elements(s.messages) with ordinality as e(m, i)
       where e.m->>'role' in ('user', 'assistant') and jsonb_typeof(e.m->'content') = 'string'
@@ -37,7 +37,7 @@ export const getSession = async (sessionId: string) => {
     try {
         // Sin `messages`: quien necesita el historial usa getMemory.
         const { rows } = await pool.query(
-            'select session_id, store_id, sender_phone, is_paused, has_appointment, updated_at from bot.sessions where session_id = $1',
+            'select session_id, store_id, sender_phone, is_paused, has_appointment, human_until, updated_at from bot.sessions where session_id = $1',
             [sessionId],
         );
         const data = rows[0];
@@ -47,6 +47,7 @@ export const getSession = async (sessionId: string) => {
                 storeId: data.store_id,
                 senderPhone: data.sender_phone,
                 isPaused: data.is_paused || false,
+                humanUntil: data.human_until ? new Date(data.human_until) : null,
                 hasAppointment: data.has_appointment || false,
                 updatedAt: data.updated_at ? new Date(data.updated_at) : null,
             };
@@ -95,6 +96,7 @@ export const getSessionSummaries = async (storeId?: string, limit = 200) => {
             storeId: row.store_id || 'default',
             phone: phoneOf(row),
             isPaused: row.is_paused || false,
+            humanUntil: row.human_until ? new Date(row.human_until) : null,
             hasAppointment: row.has_appointment || false,
             lastMessage: row.last_message || null,
             updatedAt: row.updated_at ? new Date(row.updated_at) : new Date(),
@@ -117,6 +119,7 @@ export const getSessionDetail = async (sessionId: string) => {
             storeId: row.store_id || 'default',
             phone: phoneOf(row),
             isPaused: row.is_paused || false,
+            humanUntil: row.human_until ? new Date(row.human_until) : null,
             history: withoutSystemPrompt(row.messages),
             updatedAt: row.updated_at ? new Date(row.updated_at) : new Date(),
         };
@@ -248,6 +251,66 @@ export const saveMemory = async (sessionId: string, storeId: string, senderPhone
         return true;
     } catch (e: any) {
         logger.error(`Error saving memory: ${e.message}`);
+        return false;
+    }
+};
+
+/** ¿Alguien de la joyería está atendiendo este chat desde el celular? */
+export function isHumanAttending(session: { humanUntil?: Date | null } | null | undefined, now = new Date()): boolean {
+    return !!session?.humanUntil && session.humanUntil.getTime() > now.getTime();
+}
+
+/** Máximo de mensajes que se conservan al agregar desde fuera del agente (el agente ya recorta a 15). */
+const MAX_STORED_MESSAGES = 40;
+
+/**
+ * Alguien de la joyería contestó desde la app WhatsApp Business (coexistencia): se agregan al
+ * historial los mensajes del cliente que esperaban respuesta y la respuesta humana, y el bot se
+ * aparta del chat por `hours` horas. Todo en una sola sentencia, sin leer y reescribir el historial.
+ */
+export const markHumanReply = async (
+    sessionId: string,
+    storeId: string,
+    senderPhone: string,
+    pendingUserTexts: string[],
+    humanText: string,
+    hours: number,
+): Promise<boolean> => {
+    if (!pool) return false;
+    const appended = [
+        ...pendingUserTexts.filter(Boolean).map(content => ({ role: 'user', content })),
+        { role: 'assistant', content: humanText },
+    ];
+    try {
+        await pool.query(
+            `insert into bot.sessions (session_id, store_id, sender_phone, messages, human_until, updated_at)
+             values ($1, $2, $3, $4::jsonb, now() + make_interval(hours => $5), now())
+             on conflict (session_id) do update set
+                messages = (
+                    select coalesce(jsonb_agg(e.m order by e.i), '[]'::jsonb)
+                    from jsonb_array_elements(coalesce(bot.sessions.messages, '[]'::jsonb) || excluded.messages)
+                         with ordinality as e(m, i)
+                    where e.i > jsonb_array_length(coalesce(bot.sessions.messages, '[]'::jsonb) || excluded.messages) - $6
+                ),
+                human_until = excluded.human_until,
+                updated_at = now()`,
+            [sessionId, storeId, senderPhone, toJson(appended), hours, MAX_STORED_MESSAGES],
+        );
+        return true;
+    } catch (e: any) {
+        logger.error(`Error registrando respuesta desde el celular: ${e.message}`);
+        return false;
+    }
+};
+
+/** El bot vuelve a atender el chat (botón «Reactivar bot» del panel). */
+export const clearHumanTakeover = async (sessionId: string): Promise<boolean> => {
+    if (!pool) return false;
+    try {
+        await pool.query('update bot.sessions set human_until = null where session_id = $1', [sessionId]);
+        return true;
+    } catch (e: any) {
+        logger.error(`Error devolviendo el chat al bot: ${e.message}`);
         return false;
     }
 };

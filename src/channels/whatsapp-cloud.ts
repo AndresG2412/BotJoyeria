@@ -6,7 +6,7 @@ import { logger, maskPhone } from '../utils/logger';
 import { config } from '../config/env';
 import { handleUserMessage } from '../bot/agent';
 import { db } from '../data/connection';
-import { getSession, setSessionPause, checkRateLimit, incrementMessageCount, getMemory, saveMemory, getStalePausedSessions } from '../data/database';
+import { getSession, setSessionPause, checkRateLimit, incrementMessageCount, getMemory, saveMemory, getStalePausedSessions, isHumanAttending, markHumanReply } from '../data/database';
 import { SYSTEM_PROMPT } from '../bot/prompts';
 import { PendingImage } from '../bot/tools';
 import { isUnsupportedInboundType, UNSUPPORTED_FILE_RESPONSE } from '../bot/policies';
@@ -46,6 +46,32 @@ type InboundMessage = {
 type InboundEnvelope = {
     phoneNumberId: string;
     message: InboundMessage;
+};
+
+/** Mensaje que alguien de la joyería envió desde la app WhatsApp Business (coexistencia). */
+export type MessageEcho = {
+    id?: string;
+    from?: string;
+    to?: string;
+    to_user_id?: string;
+    type?: string;
+    text?: { body?: string };
+    image?: { caption?: string };
+    video?: { caption?: string };
+    document?: { caption?: string; filename?: string };
+};
+
+export type EchoEnvelope = {
+    phoneNumberId: string;
+    echo: MessageEcho;
+};
+
+export type ParsedWebhook = {
+    messages: InboundEnvelope[];
+    echoes: EchoEnvelope[];
+    statuses: Array<{ phoneNumberId: string; status: MessageStatus }>;
+    webhooks: Array<{ phoneNumberId: string; displayPhoneNumber?: string }>;
+    disconnections: Array<{ phoneNumber?: string; event?: string; reason?: string; initiatedBy?: string }>;
 };
 
 type MessageStatus = {
@@ -286,33 +312,53 @@ function extractMessageText(message: InboundMessage): string {
     return '';
 }
 
-/** Recorre el payload del webhook: registra actividad, estados de entrega y devuelve los mensajes entrantes. */
-function extractInboundMessages(payload: any): InboundEnvelope[] {
-    const envelopes: InboundEnvelope[] = [];
-    if (payload?.object !== 'whatsapp_business_account' || !Array.isArray(payload.entry)) {
-        return envelopes;
-    }
+/**
+ * Separa el payload del webhook de Meta en lo que interesa al bot (sin efectos, para poder probarlo):
+ * mensajes de clientes, respuestas enviadas desde el celular de la joyería (smb_message_echoes),
+ * estados de entrega y desconexiones de la coexistencia (account_update).
+ */
+export function parseWebhookPayload(payload: any): ParsedWebhook {
+    const parsed: ParsedWebhook = { messages: [], echoes: [], statuses: [], webhooks: [], disconnections: [] };
+    if (payload?.object !== 'whatsapp_business_account' || !Array.isArray(payload.entry)) return parsed;
 
     for (const entry of payload.entry) {
         for (const change of entry?.changes || []) {
-            if (change?.field !== 'messages') continue;
-            const value = change.value;
+            const value = change?.value;
+            if (change?.field === 'account_update') {
+                if (value?.disconnection_info || value?.event === 'PARTNER_REMOVED') {
+                    parsed.disconnections.push({
+                        phoneNumber: value?.phone_number,
+                        event: value?.event,
+                        reason: value?.disconnection_info?.reason,
+                        initiatedBy: value?.disconnection_info?.initiated_by,
+                    });
+                }
+                continue;
+            }
+            if (change?.field !== 'messages' && change?.field !== 'smb_message_echoes') continue;
+
             const phoneNumberId = value?.metadata?.phone_number_id;
             if (!phoneNumberId) continue;
+            parsed.webhooks.push({ phoneNumberId, displayPhoneNumber: value?.metadata?.display_phone_number });
 
-            recordWebhook(phoneNumberId, value?.metadata?.display_phone_number);
-
-            for (const status of (value?.statuses || []) as MessageStatus[]) {
-                handleMessageStatus(phoneNumberId, status);
-            }
-
-            for (const message of value?.messages || []) {
-                envelopes.push({ phoneNumberId, message });
-            }
+            for (const status of (value?.statuses || []) as MessageStatus[]) parsed.statuses.push({ phoneNumberId, status });
+            for (const message of value?.messages || []) parsed.messages.push({ phoneNumberId, message });
+            for (const echo of value?.message_echoes || []) parsed.echoes.push({ phoneNumberId, echo });
         }
     }
+    return parsed;
+}
 
-    return envelopes;
+/** Texto que queda en el historial por un mensaje enviado desde el celular. */
+export function echoText(echo: MessageEcho): string {
+    if (echo.type === 'text') return echo.text?.body?.trim() || '';
+    const caption = echo.image?.caption || echo.video?.caption || echo.document?.caption || '';
+    const kind: Record<string, string> = {
+        image: 'una imagen', video: 'un video', audio: 'un audio', document: 'un documento',
+        sticker: 'un sticker', location: 'una ubicación', contacts: 'un contacto',
+    };
+    const label = `[La joyería envió ${kind[echo.type || ''] || 'un mensaje'} desde el celular]`;
+    return caption ? `${label} ${caption.trim()}` : label;
 }
 
 /**
@@ -368,6 +414,12 @@ async function runBotResponse(conversation: Conversation, userText: string): Pro
         undefined,
     );
 
+    // Si alguien de la joyería contestó desde el celular mientras la IA pensaba, el bot calla.
+    if (isHumanAttending(await getSession(sessionId))) {
+        logger.info(`WhatsApp: respuesta del bot descartada en ${sessionId}: la joyería contestó desde el celular.`);
+        return;
+    }
+
     for (const image of aiResponse.images) {
         try {
             await sendImageMessage(store, senderPhone, image);
@@ -419,7 +471,7 @@ function enqueueConversation(conversation: Conversation, userText: string, lastM
     const nextQueue = currentQueue
         .then(async () => {
             const session = await getSession(sessionId);
-            if (session?.isPaused) {
+            if (session?.isPaused || isHumanAttending(session)) {
                 // Un asesor tomó el chat mientras se agrupaban los mensajes: se guardan para que los vea.
                 const history = await getMemory(sessionId);
                 history.push({ role: 'user', content: userText });
@@ -449,7 +501,7 @@ function enqueueWebProductLead(
     const nextQueue = currentQueue
         .then(async () => {
             const session = await getSession(sessionId);
-            if (session?.isPaused) {
+            if (session?.isPaused || isHumanAttending(session)) {
                 const history = await getMemory(sessionId);
                 const sessionHistory = history.length > 0 && history[0]?.role === 'system'
                     ? history
@@ -467,6 +519,15 @@ function enqueueWebProductLead(
         });
 
     conversationQueues.set(conversation.key, nextQueue);
+}
+
+/** Saca (sin procesar) los mensajes del cliente que esperaban al bot. */
+function takePendingBatch(key: string): string[] {
+    const batch = pendingBatches.get(key);
+    if (!batch) return [];
+    pendingBatches.delete(key);
+    clearTimeout(batch.timer);
+    return batch.texts;
 }
 
 function flushBatch(key: string): void {
@@ -526,16 +587,18 @@ async function processInboundMessage(envelope: InboundEnvelope): Promise<void> {
         return;
     }
 
+    const conversation = buildConversation(store, phoneNumberId, senderPhone);
+    const sessionId = sessionIdFor(conversation);
+    const currentSession = await getSession(sessionId);
+
     if (!userText) {
-        if (isUnsupportedInboundType(message.type)) {
+        // Si la joyería está atendiendo desde el celular, el bot no interviene ni con archivos.
+        if (isUnsupportedInboundType(message.type) && !isHumanAttending(currentSession)) {
             logger.info(`Mensaje Cloud API no soportado rechazado: ${message.type}`);
             await sendTextMessage(store, senderPhone, UNSUPPORTED_FILE_RESPONSE);
         }
         return;
     }
-
-    const conversation = buildConversation(store, phoneNumberId, senderPhone);
-    const sessionId = sessionIdFor(conversation);
 
     if (userText.toLowerCase() === '!bot') {
         await resumeChat(sessionId);
@@ -543,8 +606,7 @@ async function processInboundMessage(envelope: InboundEnvelope): Promise<void> {
         return;
     }
 
-    const currentSession = await getSession(sessionId);
-    if (currentSession?.isPaused) {
+    if (currentSession?.isPaused || isHumanAttending(currentSession)) {
         const history = await getMemory(sessionId);
         history.push({ role: 'user', content: userText });
         await saveMemory(sessionId, store.id, senderPhone, history);
@@ -566,6 +628,37 @@ async function processInboundMessage(envelope: InboundEnvelope): Promise<void> {
     }
 
     addToBatch(conversation, userText, message.id);
+}
+
+/**
+ * Coexistencia: alguien de la joyería contestó desde la app WhatsApp Business. Se guarda en el
+ * historial (con lo que el cliente había escrito y esperaba al bot) y el bot se aparta del chat.
+ */
+async function processMessageEcho(envelope: EchoEnvelope): Promise<void> {
+    const { echo, phoneNumberId } = envelope;
+    if (hasProcessedMessage(echo.id)) return;
+
+    const customer = echo.to ? normalizePhone(echo.to) : (echo.to_user_id || '').trim();
+    if (!customer) return;
+    const store = await resolveStore(phoneNumberId);
+    if (!store) return;
+
+    const conversation = buildConversation(store, phoneNumberId, customer);
+    const sessionId = sessionIdFor(conversation);
+    const pending = takePendingBatch(conversation.key);
+    const saved = await markHumanReply(
+        sessionId, store.id, customer, pending, echoText(echo), config.HUMAN_TAKEOVER_HOURS,
+    );
+    if (saved) {
+        logger.info(`WhatsApp: la joyería contestó desde el celular en ${sessionId}; el bot se aparta ${config.HUMAN_TAKEOVER_HOURS} h.`);
+    }
+}
+
+function handleDisconnection(info: ParsedWebhook['disconnections'][number]): void {
+    const detail = `Coexistencia desconectada (${info.event || 'sin evento'}${info.reason ? `, motivo ${info.reason}` : ''}${info.initiatedBy ? `, por ${info.initiatedBy}` : ''}). El número ya no llega al bot: hay que volver a conectarlo.`;
+    logger.error(`WhatsApp: ${detail}`);
+    const credentials = getCredentials(null);
+    recordError(credentials.phoneNumberId, 'account_update', detail);
 }
 
 function isValidMetaSignature(req: RawBodyRequest): boolean {
@@ -609,12 +702,22 @@ whatsappRouter.post('/', (req: Request, res: Response) => {
 
     res.sendStatus(200);
 
-    const envelopes = extractInboundMessages(req.body);
-    for (const envelope of envelopes) {
-        void processInboundMessage(envelope).catch(error => {
-            logger.error(`Error procesando webhook de WhatsApp: ${error.message}`);
-        });
-    }
+    const parsed = parseWebhookPayload(req.body);
+    for (const hook of parsed.webhooks) recordWebhook(hook.phoneNumberId, hook.displayPhoneNumber);
+    for (const { phoneNumberId, status } of parsed.statuses) handleMessageStatus(phoneNumberId, status);
+    for (const info of parsed.disconnections) handleDisconnection(info);
+    // Primero las respuestas desde el celular: si en el mismo aviso llega un mensaje del
+    // cliente, el bot ya sabe que la joyería está atendiendo.
+    void (async () => {
+        for (const envelope of parsed.echoes) {
+            await processMessageEcho(envelope).catch(error => logger.error(`Error procesando eco de WhatsApp: ${error.message}`));
+        }
+        for (const envelope of parsed.messages) {
+            void processInboundMessage(envelope).catch(error => {
+                logger.error(`Error procesando webhook de WhatsApp: ${error.message}`);
+            });
+        }
+    })();
 });
 
 export async function processUnansweredMessage(sessionId: string, storeId: string, phone: string): Promise<void> {

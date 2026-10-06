@@ -25,6 +25,10 @@ tienda (`public.*`): el catálogo lo toma de la API pública de la tienda.
    y guardarlo como `supabase-ca.crt` en la raíz del bot (o indicar `BOT_DATABASE_CA_PATH`).
 5. Arrancar el bot: debe registrar `✅ Base de datos conectada (esquema bot).`
 
+## Cambios posteriores
+
+- `003_human_takeover.sql`: columna `human_until` (coexistencia). Correr ANTES de desplegar el código que la usa.
+
 ## Comprobar permisos
 
 ```sql
