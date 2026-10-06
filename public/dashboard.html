@@ -1050,14 +1050,14 @@
                     <div class="wa-health-error" id="wa-error-${s.id}" style="display:none;"></div>
                     <div class="wa-health-since" id="wa-since-${s.id}"></div>
                 </div>
-                <div style="display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,0.03);">
-                    <i class="ph ph-calendar-check" style="font-size:18px;color:var(--brand);margin-top:1px;"></i>
-                    <div style="min-width:0;">
-                        <div style="font-size:11px;color:var(--text3);text-transform:uppercase;font-weight:700;">Google Calendar</div>
-                        <div style="font-size:12px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHTML(s.adminCalendarEmail||'')}">
-                            ${s.adminCalendarEmail ? escapeHTML(s.adminCalendarEmail) : 'Sin correo configurado'}
-                        </div>
-                    </div>
+                <div class="wa-health">
+                    <div class="wa-health-title"><i class="ph ph-calendar-check"></i> Google Calendar</div>
+                    <div class="wa-health-row"><span>Estado</span><strong id="cal-state-${s.id}">—</strong></div>
+                    <div class="wa-health-row"><span>Calendario</span><strong id="cal-admin-${s.id}">—</strong></div>
+                    <div class="wa-health-row"><span>Cuenta de servicio</span><strong id="cal-account-${s.id}">—</strong></div>
+                    <div class="wa-health-note" id="cal-message-${s.id}" style="display:none;"></div>
+                    <div class="wa-health-error" id="cal-error-${s.id}" style="display:none;"></div>
+                    <div class="wa-health-since" id="cal-since-${s.id}"></div>
                 </div>
                 <div style="display:flex;gap:10px;margin-top:auto;">
                     <button class="btn-sm" style="flex:1;justify-content:center;" onclick="editStore('${s.id}')"><i class="ph ph-pencil-simple"></i> Configurar Citas</button>
@@ -1066,6 +1066,8 @@
             grid.appendChild(card);
             updateBotStatus(s.id);
             startHealthPolling(s.id);
+            updateCalendarStatus(s.id);
+            startCalendarHealthPolling(s.id);
         });
     }
 
@@ -1121,6 +1123,52 @@
     function startHealthPolling(storeId) {
         if (botPollingIntervals[storeId]) return;
         botPollingIntervals[storeId] = setInterval(() => updateBotStatus(storeId), 30000);
+    }
+
+    async function updateCalendarStatus(storeId) {
+        const res = await safeFetch(`/dashboard/api/calendar/health/${storeId}`);
+        const stateEl = document.getElementById(`cal-state-${storeId}`);
+        if (!stateEl) return;
+        if (!res || !res.ok) {
+            stateEl.textContent = 'SIN DATOS';
+            stateEl.style.color = 'var(--yellow)';
+            return;
+        }
+        const data = await res.json();
+
+        const stateStyles = {
+            OPERATIVO:                { text: 'OPERATIVO',                color: 'var(--brand)' },
+            CALENDARIO_NO_COMPARTIDO: { text: 'NO COMPARTIDO',            color: 'var(--yellow)' },
+            SIN_CONFIGURAR:           { text: 'SIN CONFIGURAR',           color: 'var(--text3)' },
+            ERROR:                    { text: 'ERROR',                    color: 'var(--red)' },
+        };
+        const style = stateStyles[data.state] || stateStyles.ERROR;
+        stateEl.textContent = style.text;
+        stateEl.style.color = style.color;
+
+        const setText = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value || '—'; };
+        setText(`cal-admin-${storeId}`, data.adminCalendarEmail);
+        setText(`cal-account-${storeId}`, data.serviceAccountEmail);
+        setText(`cal-since-${storeId}`, `Verificado ${formatHealthDate(data.checkedAt)}`);
+
+        const msgEl = document.getElementById(`cal-message-${storeId}`);
+        if (msgEl) {
+            const showMsg = data.state === 'CALENDARIO_NO_COMPARTIDO' || data.state === 'SIN_CONFIGURAR';
+            msgEl.style.display = showMsg ? 'block' : 'none';
+            msgEl.textContent = showMsg ? data.message : '';
+        }
+
+        const errEl = document.getElementById(`cal-error-${storeId}`);
+        if (errEl) {
+            errEl.style.display = data.state === 'ERROR' ? 'block' : 'none';
+            errEl.textContent = data.state === 'ERROR' ? data.message : '';
+        }
+    }
+
+    function startCalendarHealthPolling(storeId) {
+        const key = `calendar-${storeId}`;
+        if (botPollingIntervals[key]) return;
+        botPollingIntervals[key] = setInterval(() => updateCalendarStatus(storeId), 30000);
     }
 
     async function deleteStore(id, name) {
