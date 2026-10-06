@@ -41,6 +41,8 @@ export const config = {
     // Base de la tienda, esquema `bot` (sesiones y citas). Ver src/data/pool.ts.
     BOT_DATABASE_URL: process.env.BOT_DATABASE_URL || '',
     BOT_DATABASE_CA_PATH: process.env.BOT_DATABASE_CA_PATH || '',
+    // Días sin actividad tras los que se borra un chat (Ley 1581). Las citas se conservan.
+    BOT_SESSION_RETENTION_DAYS: intFromEnv('BOT_SESSION_RETENTION_DAYS', 90),
     // Ruta al JSON de cuenta de servicio de Google (solo para Google Calendar)
     GOOGLE_SERVICE_ACCOUNT_PATH: process.env.GOOGLE_SERVICE_ACCOUNT_PATH || '',
     // Agrupación de mensajes consecutivos del mismo cliente (WhatsApp)

@@ -462,9 +462,8 @@
         }
 
         allSessions.forEach(s => {
-            const history = Array.isArray(s.history) ? s.history : [];
-            const last = history.slice().reverse().find(m => m.role === 'user' || m.role === 'assistant');
-            let preview = last ? (typeof last.content === 'string' ? last.content : 'Envió un mensaje') : '—';
+            const last = s.lastMessage;
+            let preview = last ? (last.content || 'Envió un mensaje') : '—';
             if (preview.length > 40) preview = preview.substring(0, 40) + '…';
             const ic = `<div class="top"><span class="phone">${escapeHTML(cleanPhone(s.sessionId))}</span><span class="time">${formatTime(s.updatedAt)}</span></div><div class="preview">${last?.role==='assistant'?'<i class="ph ph-robot" style="color:var(--brand);margin-right:4px;vertical-align:middle;"></i>':''}${escapeHTML(preview)}</div>`;
             const hash = preview + '|' + (s.updatedAt || '');
@@ -482,10 +481,20 @@
             }
         });
 
+        // El historial completo solo se pide para el chat abierto, y solo si cambió.
         if (activeSessionId) {
             const current = allSessions.find(x => x.sessionId === activeSessionId);
-            if (current) renderActiveChat(current);
+            const stamp = current ? current.updatedAt + '|' + current.isPaused : '';
+            if (current && stamp !== _activeStamp) loadActiveChat(activeSessionId, stamp);
         }
+    }
+
+    let _activeStamp = '';
+    async function loadActiveChat(sid, stamp) {
+        _activeStamp = stamp || '';
+        const res = await safeFetch(`/dashboard/api/sessions/${encodeURIComponent(sid)}`);
+        if (!res || !res.ok || activeSessionId !== sid) return;
+        renderActiveChat(await res.json());
     }
 
     function selectSession(sid) {
@@ -494,7 +503,7 @@
             el.classList.toggle('active', el.getAttribute('data-phone') === sid);
         });
         const s = allSessions.find(x => x.sessionId === sid);
-        if (s) renderActiveChat(s);
+        if (s) loadActiveChat(sid, s.updatedAt + '|' + s.isPaused);
     }
 
     let _lastChatHash = '';
@@ -561,7 +570,7 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ sessionId: activeSessionId, message, phone, storeId })
         });
-        if (res) { _lastChatHash = ''; await loadSessions(); }
+        if (res) { _lastChatHash = ''; _activeStamp = ''; await loadSessions(); }
         else alert('Error enviando mensaje');
     }
 
@@ -572,7 +581,7 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ sessionId: activeSessionId })
         });
-        if (res && res.ok) { _lastChatHash = ''; await loadSessions(); }
+        if (res && res.ok) { _lastChatHash = ''; _activeStamp = ''; await loadSessions(); }
         else alert('Error reactivando bot');
     }
 
@@ -583,6 +592,7 @@
         if (res && res.ok) {
             activeSessionId = null;
             _lastChatHash = '';
+            _activeStamp = '';
             document.getElementById('chatHeader').style.display    = 'none';
             document.getElementById('chatMessages').style.display  = 'none';
             document.getElementById('chatInputArea').style.display = 'none';

@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { getAllSessions, deleteSession, getMemory, saveMemory } from '../data/database';
+import { getSessionSummaries, getSessionDetail, deleteSession, getMemory, saveMemory } from '../data/database';
 import { getAllProducts, getAllCategorias, clearCatalogCache } from '../data/catalog';
 import { db, deleteLocalStore } from '../data/connection';
 import { stores, users } from '../data/schema';
@@ -238,7 +238,20 @@ dashboardRouter.get('/api/sessions', async (req: any, res: Response) => {
     if (!storeId && !isSuperAdmin(req))
         return res.status(400).json({ error: 'storeId es obligatorio' });
 
-    res.json(await getAllSessions(storeId));
+    // Solo el resumen de cada chat: el panel consulta cada 5 s y el historial completo
+    // de todas las conversaciones agotaría la transferencia gratuita de Supabase.
+    res.json(await getSessionSummaries(storeId));
+});
+
+/** GET /api/sessions/:sessionId — historial completo del chat abierto */
+dashboardRouter.get('/api/sessions/:sessionId', async (req: any, res: Response) => {
+    const sessionId = req.params['sessionId'] as string;
+    if (!isSuperAdmin(req) && !sessionId.startsWith(`${req.user.storeId}_`))
+        return res.status(403).json({ error: 'Prohibido' });
+
+    const detail = await getSessionDetail(sessionId);
+    if (!detail) return res.status(404).json({ error: 'Conversación no encontrada' });
+    res.json(detail);
 });
 
 /** DELETE /api/sessions/:sessionId */

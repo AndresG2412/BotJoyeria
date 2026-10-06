@@ -13,6 +13,7 @@ import { dashboardRouter } from './routes/dashboard';
 import path from 'path';
 import { eq } from 'drizzle-orm';
 import { initializeDatabase } from './data/pool';
+import { purgeInactiveSessions } from './data/database';
 import { db } from './data/connection';
 import { users, stores } from './data/schema';
 
@@ -26,7 +27,16 @@ function safeEqual(a: unknown, b: string): boolean {
 function bootstrap() {
     logger.info(`Iniciando AI Bot para Ecommerce: ${config.STORE_NAME}`);
 
-    void initializeDatabase();
+    void initializeDatabase().then(async connected => {
+        if (!connected) return;
+        // Ley 1581: los chats sin actividad se borran pasado el plazo (al arrancar y cada 6 h).
+        const purge = async () => {
+            const deleted = await purgeInactiveSessions(config.BOT_SESSION_RETENTION_DAYS);
+            if (deleted > 0) logger.info(`Chats borrados por inactividad (> ${config.BOT_SESSION_RETENTION_DAYS} días): ${deleted}`);
+        };
+        await purge();
+        setInterval(purge, 6 * 60 * 60 * 1000).unref();
+    });
 
     const app = express();
 

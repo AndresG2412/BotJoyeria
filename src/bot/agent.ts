@@ -161,10 +161,9 @@ async function getOrCreateSession(
     sessionId: string,
     systemPrompt: string
 ): Promise<OpenAI.Chat.ChatCompletionMessageParam[]> {
+    // El historial se guarda sin las instrucciones: se ponen frescas en cada mensaje.
     const mem = await getMemory(sessionId);
-    if (!mem || mem.length === 0) return [{ role: 'system', content: systemPrompt }];
-    if (mem[0].role === 'system') mem[0].content = systemPrompt;
-    return mem;
+    return [{ role: 'system', content: systemPrompt }, ...mem];
 }
 
 // ─────────────────────────────────────────

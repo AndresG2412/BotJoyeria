@@ -11,11 +11,33 @@ function toJson(value: unknown): string {
     return JSON.stringify(value ?? []);
 }
 
+/**
+ * Las instrucciones de la IA (~18 mil caracteres) se rearman en cada mensaje: guardarlas en
+ * cada conversación solo gastaba espacio y transferencia. Se quitan al guardar y el agente
+ * las vuelve a poner al leer.
+ */
+export function withoutSystemPrompt(messages: any[]): any[] {
+    return (Array.isArray(messages) ? messages : []).filter(m => m?.role !== 'system');
+}
+
+/** Lo justo para el panel: nunca se lee el historial completo de todas las conversaciones. */
+const SESSION_SUMMARY_COLUMNS = `
+    session_id, store_id, sender_phone, is_paused, has_appointment, updated_at,
+    (select jsonb_build_object('role', e.m->>'role', 'content', left(e.m->>'content', 80))
+       from jsonb_array_elements(s.messages) with ordinality as e(m, i)
+      where e.m->>'role' in ('user', 'assistant') and jsonb_typeof(e.m->'content') = 'string'
+      order by e.i desc limit 1) as last_message`;
+
+function phoneOf(row: any): string {
+    return row.sender_phone || row.session_id.split('_').slice(1).join('_') || row.session_id;
+}
+
 export const getSession = async (sessionId: string) => {
     if (!pool) return { isPaused: false };
     try {
+        // Sin `messages`: quien necesita el historial usa getMemory.
         const { rows } = await pool.query(
-            'select * from bot.sessions where session_id = $1',
+            'select session_id, store_id, sender_phone, is_paused, has_appointment, updated_at from bot.sessions where session_id = $1',
             [sessionId],
         );
         const data = rows[0];
@@ -24,7 +46,6 @@ export const getSession = async (sessionId: string) => {
                 sessionId: data.session_id,
                 storeId: data.store_id,
                 senderPhone: data.sender_phone,
-                messages: data.messages || [],
                 isPaused: data.is_paused || false,
                 hasAppointment: data.has_appointment || false,
                 updatedAt: data.updated_at ? new Date(data.updated_at) : null,
@@ -59,25 +80,85 @@ export const incrementMessageCount = async (_sessionId: string) => {
     return true;
 };
 
-export const getAllSessions = async (storeId?: string) => {
+/** Lista para el panel: datos de cada conversación y su último mensaje (recortado). */
+export const getSessionSummaries = async (storeId?: string, limit = 200) => {
     if (!pool) return [];
     try {
-        const { rows } = storeId
-            ? await pool.query('select * from bot.sessions where store_id = $1 order by updated_at desc', [storeId])
-            : await pool.query('select * from bot.sessions order by updated_at desc');
-
+        const { rows } = await pool.query(
+            `select ${SESSION_SUMMARY_COLUMNS} from bot.sessions s
+             where ($1::text is null or s.store_id = $1)
+             order by s.updated_at desc limit $2`,
+            [storeId ?? null, limit],
+        );
         return rows.map(row => ({
-            id: row.session_id,
             sessionId: row.session_id,
             storeId: row.store_id || 'default',
-            phone: row.sender_phone || row.session_id.split('_')[1] || row.session_id,
+            phone: phoneOf(row),
             isPaused: row.is_paused || false,
-            history: row.messages || [],
+            hasAppointment: row.has_appointment || false,
+            lastMessage: row.last_message || null,
             updatedAt: row.updated_at ? new Date(row.updated_at) : new Date(),
         }));
     } catch (e: any) {
-        logger.error(`Error getting all sessions: ${e.message}`);
+        logger.error(`Error listando sesiones: ${e.message}`);
         return [];
+    }
+};
+
+/** Una conversación completa (la que el asesor abre en el panel). */
+export const getSessionDetail = async (sessionId: string) => {
+    if (!pool) return null;
+    try {
+        const { rows } = await pool.query('select * from bot.sessions where session_id = $1', [sessionId]);
+        const row = rows[0];
+        if (!row) return null;
+        return {
+            sessionId: row.session_id,
+            storeId: row.store_id || 'default',
+            phone: phoneOf(row),
+            isPaused: row.is_paused || false,
+            history: withoutSystemPrompt(row.messages),
+            updatedAt: row.updated_at ? new Date(row.updated_at) : new Date(),
+        };
+    } catch (e: any) {
+        logger.error(`Error leyendo sesión: ${e.message}`);
+        return null;
+    }
+};
+
+/**
+ * Chats pausados por un asesor cuyo último mensaje es del cliente y llevan `minutes` sin
+ * movimiento: el bot los retoma. El filtro corre en la base; solo vuelven los ids.
+ */
+export const getStalePausedSessions = async (minutes: number) => {
+    if (!pool) return [];
+    try {
+        const { rows } = await pool.query(
+            `select session_id, store_id, sender_phone from bot.sessions
+             where is_paused
+               and updated_at <= now() - make_interval(mins => $1)
+               and messages -> -1 ->> 'role' = 'user'`,
+            [minutes],
+        );
+        return rows.map(row => ({ sessionId: row.session_id, storeId: row.store_id || 'default', phone: phoneOf(row) }));
+    } catch (e: any) {
+        logger.error(`Error buscando chats pausados: ${e.message}`);
+        return [];
+    }
+};
+
+/** Ley 1581: los chats sin actividad por más de `days` días se borran (las citas se conservan). */
+export const purgeInactiveSessions = async (days: number): Promise<number> => {
+    if (!pool || !(days > 0)) return 0;
+    try {
+        const { rowCount } = await pool.query(
+            'delete from bot.sessions where updated_at < now() - make_interval(days => $1)',
+            [days],
+        );
+        return rowCount ?? 0;
+    } catch (e: any) {
+        logger.error(`Error borrando chats viejos: ${e.message}`);
+        return 0;
     }
 };
 
@@ -106,7 +187,7 @@ export const getSessionLastActivity = async (sessionId: string): Promise<Date | 
 export const clearSession = async (sessionId: string, storeId: string, senderPhone: string, systemPrompt: string) => {
     if (!pool) return true;
     try {
-        const freshMessages = [{ role: 'system', content: systemPrompt }];
+        void systemPrompt; // el agente lo vuelve a poner al leer
         await pool.query(
             `insert into bot.sessions (session_id, store_id, sender_phone, messages, has_appointment, updated_at)
              values ($1, $2, $3, $4::jsonb, false, now())
@@ -116,7 +197,7 @@ export const clearSession = async (sessionId: string, storeId: string, senderPho
                 messages = excluded.messages,
                 has_appointment = false,
                 updated_at = now()`,
-            [sessionId, storeId, senderPhone, toJson(freshMessages)],
+            [sessionId, storeId, senderPhone, toJson([])],
         );
         return true;
     } catch (e: any) {
@@ -144,7 +225,7 @@ export const getMemory = async (sessionId: string): Promise<any[]> => {
     if (!pool) return [];
     try {
         const { rows } = await pool.query('select messages from bot.sessions where session_id = $1', [sessionId]);
-        if (rows[0]) return Array.isArray(rows[0].messages) ? rows[0].messages : [];
+        if (rows[0]) return withoutSystemPrompt(rows[0].messages);
     } catch (e: any) {
         logger.error(`Error leyendo historial: ${e.message}`);
     }
@@ -162,7 +243,7 @@ export const saveMemory = async (sessionId: string, storeId: string, senderPhone
                 sender_phone = excluded.sender_phone,
                 messages = excluded.messages,
                 updated_at = now()`,
-            [sessionId, storeId, senderPhone, toJson(messages)],
+            [sessionId, storeId, senderPhone, toJson(withoutSystemPrompt(messages))],
         );
         return true;
     } catch (e: any) {
