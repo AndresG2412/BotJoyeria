@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { getSessionSummaries, getSessionDetail, deleteSession, getMemory, saveMemory } from '../data/database';
+import { getSessionSummaries, getSessionDetail, deleteSession, getMemory, saveMemory, clearHumanTakeover } from '../data/database';
 import { getAllProducts, getAllCategorias, clearCatalogCache } from '../data/catalog';
 import { db, deleteLocalStore } from '../data/connection';
 import { stores, users } from '../data/schema';
@@ -298,6 +298,8 @@ dashboardRouter.post('/api/resume', async (req: Request, res: Response) => {
         if (!sessionId) return res.status(400).json({ error: 'Falta sessionId' });
 
         await resumeChat(sessionId);
+        // También le quita el chat a la joyería si estaba contestando desde el celular.
+        await clearHumanTakeover(sessionId);
 
         const parts = sessionId.split('_');
         if (parts.length >= 2) {

@@ -41,6 +41,7 @@ El bot guarda nombre y teléfono de clientes para citas. Aplica la Ley 1581 (Col
 - `.env` y `google-service-account.json` jamás al repo (ya están en `.gitignore`).
 - La conexión a la base verifica TLS con la CA de Supabase (`supabase-ca.crt`). Nunca usar `rejectUnauthorized: false`: si falta el certificado, el bot no se conecta.
 - Transferencia (egress) de Supabase gratis = 5 GB/mes compartidos con la tienda: nunca leer el historial de TODAS las sesiones (el panel consulta cada 5 s). Listas → `getSessionSummaries`; historial → `getSessionDetail`/`getMemory` de UNA sesión; filtros masivos en SQL (`getStalePausedSessions`). Las sesiones se guardan sin el system prompt (`withoutSystemPrompt`).
+- Coexistencia (número de la joyería en la app WhatsApp Business + Cloud API): el webhook `smb_message_echoes` trae lo que la joyería contesta desde el celular → `markHumanReply` lo guarda y pone `human_until`; mientras dure, el bot no responde ni descarta respuestas ya pensadas (`isHumanAttending`). `account_update` avisa si se desconecta. Requiere `supabase/003_human_takeover.sql`.
 - Cambios de esquema: editar `supabase/002_bot_schema.sql` (o agregar un 003) y aplicarlo en el SQL Editor; el rol `bot_joyeria` no puede crear tablas.
 - WhatsApp solo acepta JPEG/PNG: las WebP del catálogo se convierten con `sharp` al enviar.
 - Mensajes seguidos del mismo cliente se agrupan (3 s de silencio, máx. 10 s) antes de llamar a la IA; hay una cola por cliente y concurrencia limitada (`WHATSAPP_BATCH_*`, `BOT_MAX_*`).

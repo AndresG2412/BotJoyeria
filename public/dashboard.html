@@ -484,7 +484,7 @@
         // El historial completo solo se pide para el chat abierto, y solo si cambió.
         if (activeSessionId) {
             const current = allSessions.find(x => x.sessionId === activeSessionId);
-            const stamp = current ? current.updatedAt + '|' + current.isPaused : '';
+            const stamp = current ? current.updatedAt + '|' + current.isPaused + '|' + (current.humanUntil || '') : '';
             if (current && stamp !== _activeStamp) loadActiveChat(activeSessionId, stamp);
         }
     }
@@ -503,14 +503,15 @@
             el.classList.toggle('active', el.getAttribute('data-phone') === sid);
         });
         const s = allSessions.find(x => x.sessionId === sid);
-        if (s) loadActiveChat(sid, s.updatedAt + '|' + s.isPaused);
+        if (s) loadActiveChat(sid, s.updatedAt + '|' + s.isPaused + '|' + (s.humanUntil || ''));
     }
 
     let _lastChatHash = '';
     function renderActiveChat(s) {
         const history = Array.isArray(s.history) ? s.history : [];
         const isPaused = !!s.isPaused;
-        const chatHash = s.sessionId + '|' + history.length + '|' + isPaused + '|' + JSON.stringify(history[history.length-1]?.content||'').substring(0,50);
+        const humanUntil = s.humanUntil && new Date(s.humanUntil) > new Date() ? new Date(s.humanUntil) : null;
+        const chatHash = s.sessionId + '|' + history.length + '|' + isPaused + '|' + (humanUntil ? humanUntil.getTime() : '') + '|' + JSON.stringify(history[history.length-1]?.content||'').substring(0,50);
         if (_lastChatHash === chatHash) return;
         _lastChatHash = chatHash;
 
@@ -524,7 +525,11 @@
 
         const statusEl  = document.getElementById('chatStatusText');
         const btnToggle = document.getElementById('btnToggleBot');
-        if (isPaused) {
+        if (humanUntil) {
+            const hasta = humanUntil.toLocaleTimeString('es-CO', { hour: 'numeric', minute: '2-digit' });
+            statusEl.innerHTML = `<span class="dot" style="background:var(--yellow);"></span> La joyería contesta desde el celular — el bot vuelve a las ${escapeHTML(hasta)}`;
+            btnToggle.style.display = 'flex';
+        } else if (isPaused) {
             statusEl.innerHTML = '<span class="dot" style="background:var(--yellow);"></span> Bot Pausado — respondiendo tú';
             btnToggle.style.display = 'flex';
         } else {

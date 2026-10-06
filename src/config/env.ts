@@ -43,6 +43,8 @@ export const config = {
     BOT_DATABASE_CA_PATH: process.env.BOT_DATABASE_CA_PATH || '',
     // Días sin actividad tras los que se borra un chat (Ley 1581). Las citas se conservan.
     BOT_SESSION_RETENTION_DAYS: intFromEnv('BOT_SESSION_RETENTION_DAYS', 90),
+    // Coexistencia: horas que el bot se aparta de un chat cuando la joyería contesta desde el celular.
+    HUMAN_TAKEOVER_HOURS: intFromEnv('HUMAN_TAKEOVER_HOURS', 4),
     // Ruta al JSON de cuenta de servicio de Google (solo para Google Calendar)
     GOOGLE_SERVICE_ACCOUNT_PATH: process.env.GOOGLE_SERVICE_ACCOUNT_PATH || '',
     // Agrupación de mensajes consecutivos del mismo cliente (WhatsApp)
