@@ -166,6 +166,21 @@ async function getOrCreateSession(
     return [{ role: 'system', content: systemPrompt }, ...mem];
 }
 
+/**
+ * Recorta el historial a las instrucciones + los últimos mensajes SIN partir un turno:
+ * si el corte deja al principio un resultado de herramienta (o la llamada que lo pidió),
+ * la IA rechaza la conversación con HTTP 400 y el bot terminaba borrando el historial.
+ * El primer mensaje después de las instrucciones siempre es del cliente.
+ */
+export function trimHistory<T extends { role?: string }>(history: T[], max: number): T[] {
+    const [first, ...rest] = history;
+    const hasSystem = first?.role === 'system';
+    const body = hasSystem ? rest : history;
+    let tail = body.length > max - 1 ? body.slice(body.length - (max - 1)) : body;
+    while (tail.length > 0 && tail[0]?.role !== 'user') tail = tail.slice(1);
+    return hasSystem ? [first, ...tail] : tail;
+}
+
 // ─────────────────────────────────────────
 //  Helpers de respuesta
 // ─────────────────────────────────────────
@@ -412,9 +427,7 @@ async function processUserMessage(
 
     await saveMemory(sessionId, storeId, senderPhone, history);
 
-    const historyForModel = history.length > MAX_HISTORY_LENGTH
-        ? [history[0], ...history.slice(history.length - MAX_HISTORY_LENGTH + 1)]
-        : history;
+    const historyForModel = trimHistory(history, MAX_HISTORY_LENGTH);
 
     // ── Sanitizar historial (quitar image_url para modelos que no lo soporten) ──
     const sanitizedHistory = historyForModel.map(msg => {
@@ -550,9 +563,7 @@ async function processUserMessage(
         const textForHistory = outMessages.join(' ');
         history.push({ role: 'assistant', content: textForHistory });
 
-        const finalHistory = history.length > MAX_HISTORY_LENGTH
-            ? [history[0], ...history.slice(history.length - MAX_HISTORY_LENGTH + 1)]
-            : history;
+        const finalHistory = trimHistory(history, MAX_HISTORY_LENGTH);
 
         await saveMemory(sessionId, storeId, senderPhone, finalHistory);
 
