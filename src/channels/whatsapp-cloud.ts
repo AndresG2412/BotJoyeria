@@ -410,8 +410,6 @@ async function runBotResponse(conversation: Conversation, userText: string): Pro
         senderPhone,
         userText,
         store.systemPrompt?.trim() ? store.systemPrompt : SYSTEM_PROMPT,
-        store.openaiApiKey?.trim() || config.OPENAI_API_KEY || null,
-        undefined,
     );
 
     // Si alguien de la joyería contestó desde el celular mientras la IA pensaba, el bot calla.

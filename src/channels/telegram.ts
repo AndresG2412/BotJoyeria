@@ -58,7 +58,6 @@ export async function initTelegramBot(storeId: string, token: string) {
                 chatId,
                 userText,
                 store.systemPrompt,
-                store.openaiApiKey || null
             );
 
             // Antes solo se enviaba el primer mensaje y se perdía el resto de la respuesta.

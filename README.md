@@ -6,7 +6,7 @@ Bot conversacional con IA para atencion al cliente via WhatsApp Cloud API oficia
 
 - **Node.js** >= 18
 - **Base de la tienda** (Supabase) con el esquema `bot` creado (`supabase/002_bot_schema.sql`)
-- **Google AI Studio** o proveedor compatible con la API de OpenAI
+- **API key de Anthropic** (Claude Haiku) en https://platform.claude.com
 - **Cuenta de Meta Developer** (para WhatsApp Cloud API)
 - **Cuenta de Resend** (para notificaciones por email, opcional)
 - **Google Cloud** con Calendar API habilitada (opcional, para agendar citas)
@@ -41,8 +41,8 @@ Copia `.env.example` a `.env` y completa **todas** las variables marcadas como R
 
 | Variable | Descripcion |
 |---|---|
-| `OPENAI_API_KEY` | API key del proveedor compatible configurado en `OPENAI_BASE_URL` |
-| `OPENAI_BASE_URL` | URL compatible con la API de OpenAI, por ejemplo Google AI Studio |
+| `ANTHROPIC_API_KEY` | API key de Anthropic. El bot usa `claude-haiku-5-5` y, si falla, `claude-haiku-4-5` |
+| `ANTHROPIC_API_KEY_2` | (Opcional) Segunda key, si la primera es rechazada o se queda sin cuota |
 | `BOT_DATABASE_URL` | Conexion al esquema `bot` de la base de la tienda con el rol `bot_joyeria` (ver `supabase/README.md`) |
 | `BOT_DATABASE_CA_PATH` | (Opcional) Certificado de Supabase; por defecto `supabase-ca.crt` en la raiz |
 | `HUMAN_TAKEOVER_HOURS` | (Opcional) Coexistencia: horas que el bot se aparta de un chat cuando la joyeria contesta desde el celular. Default 4 |
@@ -65,7 +65,7 @@ Copia `.env.example` a `.env` y completa **todas** las variables marcadas como R
 | `WHATSAPP_BATCH_QUIET_MS` | `3000` | Silencio a esperar tras el ultimo mensaje del cliente antes de responder |
 | `WHATSAPP_BATCH_MAX_WAIT_MS` | `10000` | Espera maxima desde el primer mensaje agrupado |
 | `BOT_MAX_CONCURRENT_CONVERSATIONS` | `5` | Conversaciones procesandose con la IA al mismo tiempo |
-| `BOT_MAX_TEXT_MESSAGES` | `3` | Maximo de mensajes de texto por respuesta |
+| `BOT_MAX_TEXT_MESSAGES` | `2` | Maximo de mensajes de texto por respuesta (y siempre una sola pregunta) |
 | `BOT_MAX_IMAGES` | `3` | Maximo de imagenes por respuesta |
 
 Los mensajes consecutivos de un cliente se agrupan y se envian juntos a la IA. Cada conversacion
@@ -122,7 +122,8 @@ Configura el token del bot directamente en la base de datos (tabla `stores`, col
 src/
   app.ts              # Servidor Express + inicio de bots
   bot/
-    agent.ts          # Agente conversacional OpenAI
+    agent.ts          # Agente conversacional (Claude Haiku)
+    claude.ts         # Traduce el historial guardado al formato de Claude
     prompts.ts        # System prompts
     tools.ts          # Tools/Functions disponibles para el LLM
   channels/
@@ -170,7 +171,7 @@ solucion de problemas).
 ## Tecnologias
 
 - TypeScript, Node.js, Express
-- OpenAI API (GPT-4o-mini)
+- Claude API (Anthropic): Claude Haiku 5.5, con Haiku 4.5 de respaldo
 - Supabase (PostgreSQL + Storage)
 - Drizzle ORM
 - WhatsApp Cloud API oficial

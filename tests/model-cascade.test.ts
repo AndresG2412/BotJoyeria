@@ -3,8 +3,8 @@ import test from 'node:test';
 import { availableModels, coolDownModel, ModelEntry } from '../src/bot/agent';
 
 const cascade: ModelEntry[] = [
-    { id: 'modelo-a', tools: true },
-    { id: 'modelo-b', tools: true },
+    { id: 'modelo-a', effort: true },
+    { id: 'modelo-b', effort: false },
 ];
 
 test('un modelo que falló descansa unos minutos y luego vuelve', () => {

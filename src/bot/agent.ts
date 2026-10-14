@@ -1,5 +1,7 @@
-import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
+import type OpenAI from 'openai';
 import { config } from '../config/env';
+import { AssistantReply, fromClaudeMessage, toClaudeMessages, toClaudeToolChoice, toClaudeTools } from './claude';
 import { logger } from '../utils/logger';
 import { botTools, executeTool, getPendingImages, PendingImage } from './tools';
 import { getMemory, saveMemory, getSessionLastActivity, clearSession, getSession, checkPendingAppointment, setSessionAppointmentFlag } from '../data/database';
@@ -20,23 +22,21 @@ const MODEL_TIMEOUT_MS = 20 * 1000;  // Si un modelo no responde, pasar al sigui
 const aiLimiter = createLimiter(config.BOT_MAX_CONCURRENT_CONVERSATIONS);
 
 // ─────────────────────────────────────────
-//  Cascadas de modelos
+//  Cascada de modelos (Claude)
 // ─────────────────────────────────────────
-export type ModelEntry = { id: string; tools: boolean };
+// `effort`: el modelo acepta output_config.effort y el pensamiento se puede apagar.
+// Claude Haiku 4.5 no los acepta (HTTP 400), así que va sin esos parámetros.
+export type ModelEntry = { id: string; effort: boolean };
 
-const SIMPLE_MODEL_CASCADE: ModelEntry[] = [
-    { id: 'gemini-3.1-flash-lite', tools: true  },
-    { id: 'gemini-2.5-flash',      tools: true  },
-    { id: 'gemini-3-flash',        tools: true  },
+const MODEL_CASCADE: ModelEntry[] = [
+    { id: 'claude-haiku-5-5', effort: true  },
+    { id: 'claude-haiku-4-5', effort: false },
+    // Todos con herramientas: sin acceso al catálogo un modelo inventaba piezas y precios.
 ];
 
-const COMPLEX_MODEL_CASCADE: ModelEntry[] = [
-    { id: 'gemini-3.5-flash',      tools: true  },
-    { id: 'gemini-3.1-flash-lite', tools: true  },
-    { id: 'gemini-2.5-flash',      tools: true  },
-    // Sin modelos «sin herramientas» de respaldo: sin acceso al catálogo inventaban piezas
-    // y precios, y escribían el nombre de la herramienta en el texto para el cliente.
-];
+// Tope de salida por respuesta. Las respuestas cortas las pide el prompt; esto solo
+// evita que una respuesta desbocada gaste de más (el texto no debería acercarse).
+const MAX_OUTPUT_TOKENS = 1024;
 
 /** Lo que ve el cliente si la IA no devuelve texto: nunca un error técnico. */
 const EMPTY_REPLY_FALLBACK = 'Perdona, no alcancé a procesar tu mensaje. ¿Me lo repites, por favor?';
@@ -56,43 +56,67 @@ export function coolDownModel(modelId: string, now = Date.now()): void {
     modelCooldownUntil.set(modelId, now + MODEL_COOLDOWN_MS);
 }
 
+type ChatParams = {
+    messages: OpenAI.Chat.ChatCompletionMessageParam[];
+    tools: OpenAI.Chat.Completions.ChatCompletionTool[];
+    tool_choice?: OpenAI.Chat.Completions.ChatCompletionToolChoiceOption;
+};
+
 async function createWithCascade(
     cascade: ModelEntry[],
     apiKeys: string[],
-    baseURL: string | undefined,
-    params: Omit<Parameters<OpenAI['chat']['completions']['create']>[0], 'model'>
-): Promise<{ completion: OpenAI.Chat.ChatCompletion; usedTools: boolean }> {
-    let lastError: any;
+    params: ChatParams
+): Promise<AssistantReply> {
+    const { system, messages } = toClaudeMessages(params.messages);
+    const tools = toClaudeTools(params.tools);
+    const toolChoice = toClaudeToolChoice(params.tool_choice);
+
+    let lastError: any = new Error('No hay ANTHROPIC_API_KEY configurada.');
     for (const entry of availableModels(cascade)) {
         let modelFailed = false;
         for (const apiKey of apiKeys) {
             try {
-                // Sin reintentos internos del SDK: la cascada ya prueba otra key/modelo.
-                // Con los reintentos por defecto cada HTTP 503 tardaba hasta ~1 minuto en caer.
-                const openai = new OpenAI({ apiKey, baseURL, maxRetries: 0, timeout: MODEL_TIMEOUT_MS });
-                const callParams: any = { ...params, model: entry.id };
-                if (!entry.tools) {
-                    delete callParams.tools;
-                    delete callParams.tool_choice;
-                }
-                const result = await openai.chat.completions.create(callParams);
+                // Sin reintentos internos del SDK: la cascada ya prueba otra key/modelo
+                // y el cliente no debe esperar minutos por un modelo saturado.
+                const client = new Anthropic({ apiKey, maxRetries: 0, timeout: MODEL_TIMEOUT_MS });
+                const result = await client.messages.create({
+                    model: entry.id,
+                    max_tokens: MAX_OUTPUT_TOKENS,
+                    system,
+                    messages,
+                    tools,
+                    tool_choice: toolChoice,
+                    // Chat de WhatsApp: respuestas rápidas y baratas. Sin pensamiento extendido
+                    // tampoco hay bloques de pensamiento que conservar al recortar el historial.
+                    ...(entry.effort
+                        ? { thinking: { type: 'disabled' as const }, output_config: { effort: 'low' as const } }
+                        : {}),
+                });
                 if (entry.id !== cascade[0].id) {
                     logger.warn(`Cascada: ${cascade[0].id} falló, usando ${entry.id}`);
                 }
-                return { completion: result as OpenAI.Chat.ChatCompletion, usedTools: entry.tools };
+                if (result.stop_reason === 'refusal') {
+                    logger.warn(`Cascada: ${entry.id} declinó responder (${result.stop_details?.category ?? 'sin categoría'}).`);
+                }
+                return fromClaudeMessage(result);
             } catch (err: any) {
                 lastError = err;
                 const status = err.status ?? err.statusCode;
-                const isTimeout = err instanceof OpenAI.APIConnectionTimeoutError;
-                if (isTimeout || [400, 404, 429, 500, 502, 503, 504].includes(status)) {
+                const isTimeout = err instanceof Anthropic.APIConnectionError;
+                if (status === 401 || status === 403) {
+                    // Key inválida o sin permiso: se prueba la otra key, si hay.
+                    logger.warn(`Cascada: key ...${apiKey.slice(-4)} rechazada (HTTP ${status}).`);
+                    continue;
+                }
+                if (isTimeout || [404, 429, 500, 502, 503, 504, 529].includes(status)) {
                     logger.warn(`Cascada: ${entry.id} [key ...${apiKey.slice(-4)}] → ${isTimeout ? 'timeout' : `HTTP ${status}`}, probando siguiente...`);
-                    // 400 puede ser de la key y 429 es la cuota de esa key: se prueba la otra.
-                    if (status === 400) continue;
                     modelFailed = true;
+                    // 429 es la cuota de esa key: se prueba la otra.
                     if (status === 429) continue;
                     // Saturado, caído o sin respuesta: es el modelo, no la key. Siguiente modelo.
                     break;
                 }
+                // 400: la petición está mal (p. ej. historial dañado); otro modelo no lo arregla.
                 throw err;
             }
         }
@@ -102,7 +126,7 @@ async function createWithCascade(
 }
 
 // ─────────────────────────────────────────
-//  Evaluador de complejidad
+//  Saludos
 // ─────────────────────────────────────────
 function isGreeting(userText: string): boolean {
     const text = userText.trim().toLowerCase().replace(/[¡!¿?.,]/g, '');
@@ -116,14 +140,6 @@ function isGreeting(userText: string): boolean {
     if (greetingWords.has(text)) return true;
     const words = text.split(/\s+/);
     return words.length <= 3 && words.some(w => greetingWords.has(w));
-}
-
-function isComplexTask(userText: string, hasMedia: boolean): boolean {
-    if (hasMedia)             return true;
-    if (isGreeting(userText)) return false;
-    if (userText.length > 20) return true;
-    const complexKeywords = /precio|costo|cuánto|vende|comprar|pagar|link|checkout|catálogo|producto|inventario|disponible|imagen|foto|cita|agendar|envío|envio|anillo|cadena|aretes|pulsera|dientes|candado|oro|plata|quilate|mañana|lunes|martes|miércoles|jueves|viernes|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|pm|am|nombre|teléfono/i;
-    return complexKeywords.test(userText);
 }
 
 // ─────────────────────────────────────────
@@ -251,6 +267,26 @@ export function humanizeAndSplit(content: string, maxLen = 600): string[] {
 }
 
 /**
+ * Una sola pregunta por respuesta: se envía todo hasta la primera pregunta (inclusive)
+ * y se descarta lo que venga después. El modelo a veces encadenaba dos o tres preguntas
+ * y los mensajes quedaban largos y confusos. Los "?" dentro de enlaces no cuentan.
+ */
+export function keepFirstQuestion(messages: string[]): string[] {
+    const kept: string[] = [];
+    for (const message of messages) {
+        const masked = message.replace(/\S+:\/\/\S+/g, url => ' '.repeat(url.length));
+        const end = masked.indexOf('?');
+        if (end === -1) {
+            kept.push(message);
+            continue;
+        }
+        kept.push(message.slice(0, end + 1).trim());
+        break;
+    }
+    return kept;
+}
+
+/**
  * Limita la cantidad de mensajes por respuesta sin perder contenido:
  * lo que sobra se une al último mensaje permitido.
  */
@@ -283,12 +319,11 @@ export function handleUserMessage(
     senderPhone: string,
     userText: string,
     systemPrompt: string,
-    customApiKey: string | null,
     media?: { mimetype: string; data: string }
 ): Promise<BotResponse> {
     return aiLimiter(async () => {
         try {
-            return await processUserMessage(sessionId, storeId, senderPhone, userText, systemPrompt, customApiKey, media);
+            return await processUserMessage(sessionId, storeId, senderPhone, userText, systemPrompt, media);
         } finally {
             // Si la respuesta falló a mitad de camino, no dejar imágenes huérfanas para el siguiente mensaje.
             getPendingImages(sessionId);
@@ -302,7 +337,6 @@ async function processUserMessage(
     senderPhone: string,
     userText: string,
     systemPrompt: string,
-    customApiKey: string | null,
     media?: { mimetype: string; data: string }
 ): Promise<BotResponse> {
 
@@ -386,7 +420,7 @@ async function processUserMessage(
     // el modelo responde directamente a su consulta.
     const isNewSession = history.length === 1 && history[0].role === 'system';
     if (isNewSession && (!userText.trim() || isGreeting(userText))) {
-        const welcomeMsg = 'Hola, soy Mr. 18Kilates. Cuéntame en que te ayudo, ¿ya tienes en mente la joya que buscas, estás explorando opciones o te gustaría que diseñemos una pieza única desde cero?';
+        const welcomeMsg = 'Hola, soy Mr. 18Kilates. ¿Ya tienes en mente una joya, estás explorando opciones o quieres diseñar una pieza única?';
         history.push({ role: 'user',      content: userText || 'Hola' });
         history.push({ role: 'assistant', content: welcomeMsg });
         await saveMemory(sessionId, storeId, senderPhone, history);
@@ -408,12 +442,8 @@ async function processUserMessage(
         return singleResponse(policyResponse);
     }
 
-    // ── API keys ──
-    const baseURL = config.OPENAI_BASE_URL || undefined;
-    const apiKeys = [
-        customApiKey || config.OPENAI_API_KEY,
-        ...(config.OPENAI_API_KEY_2 ? [config.OPENAI_API_KEY_2] : []),
-    ].filter(Boolean) as string[];
+    // ── API keys (Anthropic) ──
+    const apiKeys = [config.ANTHROPIC_API_KEY, config.ANTHROPIC_API_KEY_2].filter(Boolean);
 
     // ── Mensaje del usuario ──
     const contentPayload: any = media
@@ -441,22 +471,15 @@ async function processUserMessage(
         return msg;
     }) as OpenAI.Chat.ChatCompletionMessageParam[];
 
-    // ── Selección de cascada ──
-    const isComplex     = isComplexTask(userText, !!media);
-    const activeCascade = isComplex ? COMPLEX_MODEL_CASCADE : SIMPLE_MODEL_CASCADE;
-    logger.info(`Sesión ${sessionId} → cascada ${isComplex ? 'COMPLEJA' : 'SIMPLE'} (${activeCascade[0].id})`);
-
     try {
-        let { completion: aiResponse, usedTools } = await createWithCascade(
-            activeCascade, apiKeys, baseURL,
+        let responseMessage = await createWithCascade(
+            MODEL_CASCADE, apiKeys,
             { messages: sanitizedHistory, tools: botTools, tool_choice: 'auto' }
         );
 
-        let responseMessage = aiResponse.choices[0].message;
-
         // ── Bucle de tool calls ──
         let toolRounds = 0;
-        while (usedTools && responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
+        while (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
             if (++toolRounds > MAX_TOOL_ROUNDS) {
                 logger.warn(`Sesión ${sessionId}: se alcanzó el máximo de ${MAX_TOOL_ROUNDS} rondas de herramientas.`);
                 break;
@@ -491,13 +514,10 @@ async function processUserMessage(
                 });
             }
 
-            const next = await createWithCascade(
-                activeCascade, apiKeys, baseURL,
+            responseMessage = await createWithCascade(
+                MODEL_CASCADE, apiKeys,
                 { messages: history, tools: botTools, tool_choice: 'auto' }
             );
-            aiResponse      = next.completion;
-            usedTools       = next.usedTools;
-            responseMessage = aiResponse.choices[0].message;
         }
 
         // ── Respuesta final ──
@@ -518,18 +538,18 @@ async function processUserMessage(
         if (appointmentPhrases.test(finalContent) && !scheduleWasCalled) {
             logger.warn(`Sesión ${sessionId}: modelo confirmó cita sin invocar schedule_appointment. Reintentando con tool_choice forzado.`);
             try {
-                const forced = await createWithCascade(
-                    COMPLEX_MODEL_CASCADE,
+                const forcedMsg = await createWithCascade(
+                    MODEL_CASCADE,
                     apiKeys,
-                    baseURL,
                     {
                         messages: history,
                         tools: botTools,
                         tool_choice: { type: 'function', function: { name: 'schedule_appointment' } },
                     }
                 );
-                const forcedMsg = forced.completion.choices[0].message;
                 if (forcedMsg.tool_calls?.length) {
+                    // Una sola vez: repetir la llamada con el mismo id la rechaza Claude (HTTP 400).
+                    history.push(forcedMsg);
                     for (const tc of forcedMsg.tool_calls) {
                         const result = await executeTool(
                             tc.function.name,
@@ -537,14 +557,13 @@ async function processUserMessage(
                             storeId, senderPhone, sessionId,
                             enrichedSystemPrompt, adminCalendarEmail, pqrEmail
                         );
-                        history.push(forcedMsg);
                         history.push({ role: 'tool', tool_call_id: tc.id, content: result });
                     }
                     const finalCall = await createWithCascade(
-                        COMPLEX_MODEL_CASCADE, apiKeys, baseURL,
+                        MODEL_CASCADE, apiKeys,
                         { messages: history, tools: botTools, tool_choice: 'auto' }
                     );
-                    finalContent = finalCall.completion.choices[0].message.content || finalContent;
+                    finalContent = finalCall.content || finalContent;
                 }
             } catch (forceErr: any) {
                 logger.error(`Reintento forzado fallido: ${forceErr.message}`);
@@ -552,11 +571,13 @@ async function processUserMessage(
             }
         }
 
-        // ── Dividir en mensajes si el modelo usó ||MSG||, humanizar y limitar la cantidad ──
-        const outMessages = capMessages(
-            splitMessages(finalContent).flatMap(msg => humanizeAndSplit(msg)),
-            config.BOT_MAX_TEXT_MESSAGES,
-        );
+        // ── Dividir en mensajes si el modelo usó ||MSG||, humanizar, una sola pregunta y limitar la cantidad ──
+        const splitOut = splitMessages(finalContent).flatMap(msg => humanizeAndSplit(msg));
+        const oneQuestion = keepFirstQuestion(splitOut);
+        if (oneQuestion.join(' ').length < splitOut.join(' ').length) {
+            logger.info(`Sesión ${sessionId}: se recortó la respuesta para dejar una sola pregunta.`);
+        }
+        const outMessages = capMessages(oneQuestion, config.BOT_MAX_TEXT_MESSAGES);
         if (outMessages.length === 0) outMessages.push(EMPTY_REPLY_FALLBACK);
 
         // Guardar en historial el texto unificado (sin separadores)
@@ -585,11 +606,11 @@ async function processUserMessage(
             ];
             await saveMemory(sessionId, storeId, senderPhone, freshHistory);
             try {
-                const { completion: retryResponse } = await createWithCascade(
-                    activeCascade, apiKeys, baseURL,
+                const retryResponse = await createWithCascade(
+                    MODEL_CASCADE, apiKeys,
                     { messages: freshHistory, tools: botTools, tool_choice: 'auto' }
                 );
-                const retryContent = retryResponse.choices[0].message.content || EMPTY_REPLY_FALLBACK;
+                const retryContent = retryResponse.content || EMPTY_REPLY_FALLBACK;
                 freshHistory.push({ role: 'assistant', content: retryContent });
                 await saveMemory(sessionId, storeId, senderPhone, freshHistory);
                 return singleResponse(retryContent);

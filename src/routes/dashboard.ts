@@ -9,7 +9,7 @@ import {
     getStoreWhatsAppHealth,
     sendWhatsAppMessage, pauseChat, resumeChat, processUnansweredMessage
 } from '../channels/whatsapp-cloud';
-import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
 // import { v2 as cloudinary } from 'cloudinary';
 import { config } from '../config/env';
 import { logger } from '../utils/logger';
@@ -365,22 +365,19 @@ for (const route of ['/api/categorias', '/api/categorias/:id', '/api/products', 
 
 /** GET /api/test-models — prueba rápida de modelos disponibles (superadmin) */
 dashboardRouter.get('/api/test-models', checkSuperAdmin, async (_req: Request, res: Response) => {
-    const models = [
-        'gemini-2.5-flash', 'gemini-2.5-flash-lite',
-        'gemini-2.0-flash', 'gemini-2.0-flash-lite',
-        'gemini-2.5-pro', 'gemma-3-27b-it', 'gemma-3-4b-it',
-    ];
-    const openai = new OpenAI({ apiKey: config.OPENAI_API_KEY, baseURL: config.OPENAI_BASE_URL || undefined });
+    const models = ['claude-haiku-5-5', 'claude-haiku-4-5'];
+    const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, maxRetries: 0 });
     const results: Record<string, string> = {};
 
     for (const model of models) {
         try {
-            const r = await openai.chat.completions.create({
+            const r = await anthropic.messages.create({
                 model,
+                max_tokens: 256, // deja espacio si el modelo piensa antes de responder
                 messages: [{ role: 'user', content: 'Responde solo: OK' }],
-                max_tokens: 5,
-            } as any);
-            results[model] = `✅ ${r.choices[0].message.content?.trim()}`;
+            });
+            const text = r.content.find(block => block.type === 'text');
+            results[model] = `✅ ${text?.type === 'text' ? text.text.trim() : ''}`;
         } catch (err: any) {
             results[model] = `❌ ${err.status ?? ''} ${err.message?.substring(0, 60)}`;
         }
