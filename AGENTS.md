@@ -3,7 +3,7 @@
 Bot conversacional con IA que atiende clientes de la joyería Mr. 18Kilates (Pitalito, Colombia) por WhatsApp Cloud API (Meta). También Telegram y panel web de administración. Producción: VPS Windows con PM2 (flujo completo en `DEPLOY.md`).
 
 ## Stack
-TypeScript + Express. Catálogo leído de la API pública de la tienda (`SITE_URL`, por defecto https://www.mr18kts.online). Sesiones y citas en la base de la tienda (Supabase), esquema `bot`, con `pg` y el rol restringido `bot_joyeria` (`src/data/pool.ts`, `supabase/002_bot_schema.sql`); las tiendas del bot en `data/local-stores.json` (mock en `src/data/connection.ts`). IA vía API compatible con OpenAI (Google AI Studio, configurable con `OPENAI_BASE_URL`/`OPENAI_MODEL`). Google Calendar (citas), Resend (emails). Sin QR ni Puppeteer: Meta entrega a un webhook y el bot responde con Graph API.
+TypeScript + Express. Catálogo leído de la API pública de la tienda (`SITE_URL`, por defecto https://www.mr18kts.online). Sesiones y citas en la base de la tienda (Supabase), esquema `bot`, con `pg` y el rol restringido `bot_joyeria` (`src/data/pool.ts`, `supabase/002_bot_schema.sql`); las tiendas del bot en `data/local-stores.json` (mock en `src/data/connection.ts`). IA con Claude (`@anthropic-ai/sdk`, `ANTHROPIC_API_KEY`): `claude-haiku-5-5` con `claude-haiku-4-5` de respaldo; el historial se guarda en formato OpenAI y `src/bot/claude.ts` lo traduce al llamar al modelo. Google Calendar (citas), Resend (emails). Sin QR ni Puppeteer: Meta entrega a un webhook y el bot responde con Graph API.
 
 ## Comandos
 ```bash

@@ -12,10 +12,9 @@ function intFromEnv(name: string, fallback: number): number {
 }
 
 export const config = {
-    OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
-    OPENAI_API_KEY_2: process.env.OPENAI_API_KEY_2 || '',
-    OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || '',
-    OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    // IA: Claude (Anthropic). La segunda key es opcional: se usa si la primera falla o se queda sin cuota.
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
+    ANTHROPIC_API_KEY_2: process.env.ANTHROPIC_API_KEY_2 || '',
     STORE_NAME: process.env.STORE_NAME || 'nuestro ecommerce',
     PORT: process.env.PORT || 3000,
     DASHBOARD_USER: process.env.DASHBOARD_USER || 'admin',
@@ -53,13 +52,13 @@ export const config = {
     // Conversaciones procesándose con la IA al mismo tiempo (protege servidor y cuota)
     BOT_MAX_CONCURRENT_CONVERSATIONS: intFromEnv('BOT_MAX_CONCURRENT_CONVERSATIONS', 5),
     // Límites de calidad por mensaje entrante (no son límites oficiales de Meta)
-    BOT_MAX_TEXT_MESSAGES: intFromEnv('BOT_MAX_TEXT_MESSAGES', 3),
+    BOT_MAX_TEXT_MESSAGES: intFromEnv('BOT_MAX_TEXT_MESSAGES', 2),
     BOT_MAX_IMAGES: intFromEnv('BOT_MAX_IMAGES', 1),
 };
 
 // Validación simple
-if (!config.OPENAI_API_KEY) {
-    console.warn("⚠️ ADVERTENCIA: No se ha configurado OPENAI_API_KEY en el archivo .env!");
+if (!config.ANTHROPIC_API_KEY) {
+    console.warn("⚠️ ADVERTENCIA: No se ha configurado ANTHROPIC_API_KEY en el archivo .env: el bot no podrá responder con IA.");
 }
 if (!config.DASHBOARD_PASSWORD) {
     console.warn("⚠️ ADVERTENCIA: Falta DASHBOARD_PASSWORD: el panel no aceptará ingresos hasta configurarla.");

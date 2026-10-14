@@ -32,7 +32,7 @@ WhatsApp Cloud API. Está pensada para un **VPS Windows** (el proyecto ya trae
 |---|---|
 | Node.js 20 o superior (recomendado 22/24 LTS) | `node -v` |
 | Git | `git --version` |
-| Acceso a internet saliente (Supabase, Meta, Google AI Studio) | — |
+| Acceso a internet saliente (Supabase, Meta, Anthropic) | — |
 
 Instalar Node.js: https://nodejs.org (versión LTS). Instalar Git: https://git-scm.com.
 
@@ -61,7 +61,7 @@ git pull origin master
 ## 3. Configurar el `.env`
 
 1. Copiar la plantilla: `copy .env.example .env`
-2. Completar **todas** las credenciales reales (OpenAI/Google AI Studio, Supabase, Meta, Resend,
+2. Completar **todas** las credenciales reales (Anthropic, Supabase, Meta, Resend,
    `DASHBOARD_USER`, `DASHBOARD_PASSWORD`).
 3. Cambiar obligatoriamente en producción:
    - `DASHBOARD_PASSWORD` → una contraseña fuerte (no `admin123`).
@@ -233,7 +233,7 @@ pm2 restart whatsapp-bot --update-env
 | Log: "Webhook de Meta rechazado: firma inválida" | `META_APP_SECRET` incorrecto | Copiar la clave secreta correcta de la app en `.env` y reiniciar |
 | Panel en ERROR con "(código 190)" | Token de Meta vencido o inválido | Generar token de usuario del sistema (paso 3.4) |
 | Llega el texto pero no la imagen | Error de entrega de Meta | Ver "Último error" en el panel y `pm2 logs` |
-| Respuestas lentas y logs "Cascada ... HTTP 503" | Google AI Studio saturado | Es temporal; el bot pasa al siguiente modelo automáticamente |
+| Respuestas lentas y logs "Cascada ... HTTP 529/503" | Anthropic saturado | Es temporal; el bot pasa al siguiente modelo automáticamente |
 | Panel en CONFIGURACIÓN INCOMPLETA | Faltan variables de Meta | El panel lista cuáles faltan en el `.env` |
 
 ---

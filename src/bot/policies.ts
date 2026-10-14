@@ -1,7 +1,7 @@
 /** Reglas deterministas de negocio que no deben depender únicamente del modelo. */
 
 export const MULTIPLE_PRODUCT_RESPONSE =
-    'Para ver varias opciones, visita nuestra página: https://www.mr18kts.online. Si no estás seguro de cuál elegir, revisa el catálogo y dime el nombre de la pieza que te interese.';
+    'Todas las opciones están en https://www.mr18kts.online. Dime el nombre de la pieza que te guste y te ayudo.';
 
 export const SINGLE_PRODUCT_RESPONSE =
     'Solo puedo mostrarte un producto a la vez. Selecciona la pieza que deseas ver.';
