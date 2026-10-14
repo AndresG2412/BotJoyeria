@@ -7,7 +7,7 @@ import { config } from '../config/env';
 import { handleUserMessage } from '../bot/agent';
 import { db } from '../data/connection';
 import { getSession, setSessionPause, checkRateLimit, incrementMessageCount, getMemory, saveMemory, getStalePausedSessions, isHumanAttending, markHumanReply } from '../data/database';
-import { SYSTEM_PROMPT } from '../bot/prompts';
+import { resolveSystemPrompt } from '../bot/prompts';
 import { PendingImage } from '../bot/tools';
 import { isUnsupportedInboundType, UNSUPPORTED_FILE_RESPONSE } from '../bot/policies';
 import { getProductById } from '../data/catalog';
@@ -409,7 +409,7 @@ async function runBotResponse(conversation: Conversation, userText: string): Pro
         store.id,
         senderPhone,
         userText,
-        store.systemPrompt?.trim() ? store.systemPrompt : SYSTEM_PROMPT,
+        resolveSystemPrompt(store.systemPrompt),
     );
 
     // Si alguien de la joyería contestó desde el celular mientras la IA pensaba, el bot calla.
@@ -445,7 +445,7 @@ async function runWebProductLeadResponse(
     const response = buildWebProductLeadResponse(product, lead.tono);
 
     const history = await getMemory(sessionId);
-    const initialSystemPrompt = store.systemPrompt?.trim() || SYSTEM_PROMPT;
+    const initialSystemPrompt = resolveSystemPrompt(store.systemPrompt);
     const sessionHistory = history.length > 0 && history[0]?.role === 'system'
         ? history
         : [{ role: 'system', content: initialSystemPrompt }, ...history];
@@ -503,7 +503,7 @@ function enqueueWebProductLead(
                 const history = await getMemory(sessionId);
                 const sessionHistory = history.length > 0 && history[0]?.role === 'system'
                     ? history
-                    : [{ role: 'system', content: conversation.store.systemPrompt?.trim() || SYSTEM_PROMPT }, ...history];
+                    : [{ role: 'system', content: resolveSystemPrompt(conversation.store.systemPrompt) }, ...history];
                 sessionHistory.push({ role: 'user', content: userText });
                 await saveMemory(sessionId, conversation.store.id, conversation.senderPhone, sessionHistory);
                 return;
