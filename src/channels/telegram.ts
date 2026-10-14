@@ -1,5 +1,6 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { handleUserMessage } from '../bot/agent';
+import { resolveSystemPrompt } from '../bot/prompts';
 import { logger } from '../utils/logger';
 import { stores } from '../data/schema';
 import { eq } from 'drizzle-orm';
@@ -57,7 +58,7 @@ export async function initTelegramBot(storeId: string, token: string) {
                 storeId,
                 chatId,
                 userText,
-                store.systemPrompt,
+                resolveSystemPrompt(store.systemPrompt),
             );
 
             // Antes solo se enviaba el primer mensaje y se perdía el resto de la respuesta.

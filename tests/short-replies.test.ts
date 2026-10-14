@@ -23,3 +23,12 @@ test('sin preguntas no se recorta nada y los "?" de los enlaces no cuentan', () 
         ['Mira https://www.mr18kts.online/pieza?ref=12 ¿Te gusta?'],
     );
 });
+
+test('la frase por defecto de la tienda no reemplaza el flujo completo', async () => {
+    const { resolveSystemPrompt, SYSTEM_PROMPT, DEFAULT_STORE_SYSTEM_PROMPT } = await import('../src/bot/prompts');
+    assert.equal(resolveSystemPrompt(DEFAULT_STORE_SYSTEM_PROMPT), SYSTEM_PROMPT);
+    assert.equal(resolveSystemPrompt(`  ${DEFAULT_STORE_SYSTEM_PROMPT}\n`), SYSTEM_PROMPT);
+    assert.equal(resolveSystemPrompt(''), SYSTEM_PROMPT);
+    assert.equal(resolveSystemPrompt(null), SYSTEM_PROMPT);
+    assert.equal(resolveSystemPrompt('Prompt propio de otra tienda.'), 'Prompt propio de otra tienda.');
+});

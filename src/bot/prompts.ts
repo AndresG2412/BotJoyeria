@@ -263,4 +263,14 @@ export const SECURITY_PROMPT = `
 //  Prompts de sistema secundarios
 // ─────────────────────────────────────────────────────────────────────────────
 export const DEFAULT_STORE_SYSTEM_PROMPT = "Eres un asesor de joyería experto en ventas de Mr. 18Kilates.";
+
+/**
+ * Prompt que usa el bot para una tienda. La frase por defecto que el panel guarda al crear
+ * la tienda no es un prompt propio: con ella el bot ignoraba todo el flujo de SYSTEM_PROMPT
+ * (y así estaba en producción). Solo un texto distinto reemplaza al flujo completo.
+ */
+export function resolveSystemPrompt(storePrompt?: string | null): string {
+    const custom = storePrompt?.trim();
+    return custom && custom !== DEFAULT_STORE_SYSTEM_PROMPT ? custom : SYSTEM_PROMPT;
+}
 export const TEST_MODEL_PROMPT = 'Di solo: OK';
