@@ -79,6 +79,8 @@ function summarizeProductsBrief(products: any[]) {
         nombre: p.name || p.nombre || '',
         precio: p.price > 0 ? p.price : null,
         disponibilidad: availabilityLabel(p.stock),
+        // Página de la pieza en la tienda: ahí se compra y se paga en línea.
+        enlace: p.url || null,
     }));
 }
 
@@ -282,7 +284,7 @@ export async function executeTool(
                 }
                 return JSON.stringify({
                     productos: summarizeProductsBrief(products.slice(0, 1)),
-                    instrucciones: 'Presenta SOLO una pieza con nombre y precio, en una línea y sin listas. Si el stock es 0, indica que es bajo pedido y que debe separar cita o visitar personalmente para confirmar. Si pide más detalles, usa get_product_details. Si pide foto, usa send_product_image.'
+                    instrucciones: 'Presenta SOLO una pieza con nombre y precio, en una línea y sin listas. Si el stock es 0, indica que es bajo pedido y ofrece cita en Pitalito o llamada para confirmarla. Si pide más detalles, usa get_product_details. Si pide foto, usa send_product_image. Si la pieza está disponible y el cliente quiere comprarla, compártele su enlace: ahí la paga en la tienda en línea. No le ofrezcas cita ni llamada para comprar una pieza disponible.'
                 });
             }
 
@@ -318,8 +320,8 @@ export async function executeTool(
                     coincidencias: 1,
                     producto: summarizeProductsBrief([product])[0],
                     instrucciones: product.stock > 0
-                        ? 'Presenta solo esta pieza con nombre y precio. Si pide detalles usa get_product_details; si pide foto usa send_product_image.'
-                        : 'Presenta solo esta pieza e indica que está disponible bajo pedido y que debe separar una cita presencial para confirmar disponibilidad.',
+                        ? 'Presenta solo esta pieza con nombre y precio. Si pide detalles usa get_product_details; si pide foto usa send_product_image. Si la pieza está disponible y el cliente quiere comprarla, compártele su enlace: ahí la paga en la tienda en línea. No le ofrezcas cita ni llamada para comprar una pieza disponible.'
+                        : 'Presenta solo esta pieza e indica que está disponible bajo pedido; ofrece cita en Pitalito o llamada para confirmarla.',
                 });
             }
 
@@ -335,7 +337,9 @@ export async function executeTool(
                     disponibilidad: availabilityLabel(product.stock),
                     instrucciones_disponibilidad: availabilityInstruction(product.stock),
                     instrucciones_enlace: product.url
-                        ? `Si el cliente quiere ver la pieza completa o más fotos, compártele este enlace: ${product.url}`
+                        ? (product.stock > 0
+                            ? `Enlace de la pieza: ${product.url}. Si la pieza está disponible y el cliente quiere comprarla, compártele su enlace: ahí la paga en la tienda en línea. No le ofrezcas cita ni llamada para comprar una pieza disponible.`
+                            : `Si el cliente quiere ver la pieza completa o más fotos, compártele este enlace: ${product.url}`)
                         : undefined,
                 });
             }
@@ -359,11 +363,15 @@ export async function executeTool(
                 }
                 const productInfo = await getProductById(args.product_id, storeId);
                 const baseName = productInfo ? productInfo.name : 'Joya';
+                // Pieza disponible: la foto lleva el enlace para comprarla y pagarla en la tienda.
+                const buyLink = productInfo && productInfo.stock > 0 && productInfo.url ? productInfo.url : '';
                 let sent = 0;
 
                 for (let i = 0; i < images.length; i++) {
                     const imageUrl = images[i];
-                    const caption = i === 0 ? `📸 ${baseName}` : undefined;
+                    const caption = i === 0
+                        ? (buyLink ? `📸 ${baseName}\nCompra aquí: ${buyLink}` : `📸 ${baseName}`)
+                        : undefined;
                     try {
                         if (imageUrl.startsWith('data:')) {
                             queueImage(sessionKey, imageUrl, caption);
@@ -396,7 +404,9 @@ export async function executeTool(
                     message: `Se enviarán ${sent} imagen(es) de ${baseName} junto con tu respuesta.`,
                     instructions_for_ai: remaining > 0
                         ? `Las fotos principales se envían con tu respuesta. Hay ${remaining} foto(s) más de esta joya: ofrécelas solo si el cliente quiere ver más. Continúa tu respuesta de texto normalmente.`
-                        : 'Las fotos se envían con tu respuesta. Continúa tu respuesta de texto normalmente.'
+                        : (buyLink
+                            ? 'La foto se envía con el nombre de la pieza y su enlace para comprarla: no repitas el enlace. Responde solo con una pregunta corta, por ejemplo "¿Te ayudo con algo más?". No ofrezcas cita ni llamada.'
+                            : 'Las fotos se envían con tu respuesta. Continúa tu respuesta de texto normalmente.')
                 });
             }
 
