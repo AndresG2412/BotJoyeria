@@ -65,8 +65,9 @@ Copia `.env.example` a `.env` y completa **todas** las variables marcadas como R
 
 | Variable | Default | Descripcion |
 |---|---|---|
-| `WHATSAPP_BATCH_QUIET_MS` | `3000` | Silencio a esperar tras el ultimo mensaje del cliente antes de responder |
-| `WHATSAPP_BATCH_MAX_WAIT_MS` | `10000` | Espera maxima desde el primer mensaje agrupado |
+| `WHATSAPP_BATCH_QUIET_MS` | `1500` | Silencio a esperar tras el ultimo mensaje del cliente antes de responder |
+| `WHATSAPP_BATCH_MAX_WAIT_MS` | `5000` | Espera maxima desde el primer mensaje agrupado |
+| `AI_TIMEOUT_MS` | `25000` | Espera máxima por respuesta de la IA; si se agota, se reintenta una vez |
 | `BOT_MAX_CONCURRENT_CONVERSATIONS` | `5` | Conversaciones procesandose con la IA al mismo tiempo |
 | `BOT_MAX_TEXT_MESSAGES` | `2` | Maximo de mensajes de texto por respuesta (y siempre una sola pregunta) |
 | `BOT_MAX_IMAGES` | `3` | Maximo de imagenes por respuesta |

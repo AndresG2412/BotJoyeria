@@ -16,7 +16,7 @@ import { MULTIPLE_IMAGE_RESPONSE, MULTIPLE_PRODUCT_RESPONSE, isMultipleImageRequ
 const MAX_HISTORY_LENGTH  = 15;
 const INACTIVITY_TIMEOUT_MS = 12 * 60 * 60 * 1000; // 12 horas
 const MAX_TOOL_ROUNDS = 5;           // Evita bucles infinitos de tool calls
-const MODEL_TIMEOUT_MS = 20 * 1000;  // Si un modelo no responde, pasar al siguiente de la cascada
+const MODEL_TIMEOUT_MS = config.AI_TIMEOUT_MS;  // Si un modelo no responde, se reintenta una vez y luego se pasa al siguiente
 
 // Conversaciones procesándose con la IA al mismo tiempo (todas las tiendas y canales).
 const aiLimiter = createLimiter(config.BOT_MAX_CONCURRENT_CONVERSATIONS);
@@ -115,7 +115,15 @@ async function createWithCascade(
         let modelFailed = false;
         for (const apiKey of apiKeys) {
             try {
-                const reply = await call(entry, apiKey, params);
+                let reply: AssistantReply;
+                try {
+                    reply = await call(entry, apiKey, params);
+                } catch (firstErr) {
+                    // Una demora puntual del proveedor no debe llegarle al cliente como error.
+                    if (!isConnectionError(firstErr)) throw firstErr;
+                    logger.warn(`Cascada: ${entry.id} no respondió a tiempo, reintentando una vez...`);
+                    reply = await call(entry, apiKey, params);
+                }
                 if (entry.id !== cascade[0].id) {
                     logger.warn(`Cascada: ${cascade[0].id} falló, usando ${entry.id}`);
                 }
