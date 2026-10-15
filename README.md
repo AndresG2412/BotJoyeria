@@ -46,6 +46,7 @@ Copia `.env.example` a `.env` y completa **todas** las variables marcadas como R
 | `AI_API_KEY_2` | (Opcional) Segunda key, si la primera es rechazada o se queda sin cuota |
 | `AI_BASE_URL` | (Opcional) URL de la API; vacía = API oficial. Con otra URL, `AI_MODELS` es obligatorio |
 | `AI_MODELS` | (Opcional) Modelos en orden de preferencia, separados por coma. Por defecto `claude-haiku-5-5,claude-haiku-4-5`. Deben aceptar herramientas e imágenes |
+| `AI_FALLBACK_*` | (Opcional) Proveedor de respaldo: `AI_FALLBACK_PROVIDER`, `AI_FALLBACK_BASE_URL`, `AI_FALLBACK_API_KEY` (y `_2`), `AI_FALLBACK_MODELS`. Se usa si los modelos principales fallan |
 | `BOT_DATABASE_URL` | Conexion al esquema `bot` de la base de la tienda con el rol `bot_joyeria` (ver `supabase/README.md`) |
 | `BOT_DATABASE_CA_PATH` | (Opcional) Certificado de Supabase; por defecto `supabase-ca.crt` en la raiz |
 | `HUMAN_TAKEOVER_HOURS` | (Opcional) Coexistencia: horas que el bot se aparta de un chat cuando la joyeria contesta desde el celular. Default 4 |
