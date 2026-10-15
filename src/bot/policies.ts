@@ -10,7 +10,7 @@ export const MULTIPLE_IMAGE_RESPONSE =
     'No es posible enviar varias imágenes. Selecciona un solo producto y te mostraré una imagen.';
 
 export const UNSUPPORTED_FILE_RESPONSE =
-    'Solo puedo ayudarte mostrando productos de nuestro catálogo. Envíame el nombre o referencia de la joya que te interesa.';
+    'Solo leo texto y fotos. Envíame una foto o el nombre de la joya del catálogo que te interesa.';
 
 export const APPOINTMENT_CITY = 'Pitalito';
 export const APPOINTMENT_ADDRESS = 'Calle 4 #1-31';
@@ -105,8 +105,9 @@ export function availabilityInstruction(stock: number): string {
         : 'Esta pieza aparece disponible en el catálogo.';
 }
 
+// Las fotos (`image`) sí se aceptan: el bot las mira para buscar una pieza parecida.
 const UNSUPPORTED_INBOUND_TYPES = new Set([
-    'image', 'document', 'audio', 'video', 'sticker', 'contacts', 'location',
+    'document', 'audio', 'video', 'sticker', 'contacts', 'location',
 ]);
 
 export function isUnsupportedInboundType(type?: string): boolean {

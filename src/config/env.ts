@@ -11,10 +11,28 @@ function intFromEnv(name: string, fallback: number): number {
     return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+/** Lista separada por comas del entorno ("a, b" → ['a', 'b']). */
+function listFromEnv(name: string): string[] {
+    return (process.env[name] || '').split(',').map(item => item.trim()).filter(Boolean);
+}
+
+// IA: proveedor con formato de Anthropic (Claude, o DeepSeek en /anthropic) o con formato
+// de OpenAI (DeepSeek directo y plataformas que lo revenden). Ver src/bot/agent.ts.
+const AI_PROVIDER: 'anthropic' | 'openai' = process.env.AI_PROVIDER?.trim().toLowerCase() === 'openai' ? 'openai' : 'anthropic';
+const DEFAULT_AI_MODELS = AI_PROVIDER === 'anthropic' && !process.env.AI_BASE_URL?.trim()
+    ? ['claude-haiku-5-5', 'claude-haiku-4-5']
+    : [];
+
 export const config = {
-    // IA: Claude (Anthropic). La segunda key es opcional: se usa si la primera falla o se queda sin cuota.
-    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
-    ANTHROPIC_API_KEY_2: process.env.ANTHROPIC_API_KEY_2 || '',
+    AI_PROVIDER,
+    // Las keys ANTHROPIC_* se siguen leyendo por compatibilidad con .env ya configurados.
+    AI_API_KEY: (process.env.AI_API_KEY || process.env.ANTHROPIC_API_KEY || '').trim(),
+    // Opcional: se usa si la primera key es rechazada o se queda sin cuota.
+    AI_API_KEY_2: (process.env.AI_API_KEY_2 || process.env.ANTHROPIC_API_KEY_2 || '').trim(),
+    // Vacío = API oficial del proveedor (Anthropic u OpenAI).
+    AI_BASE_URL: (process.env.AI_BASE_URL || '').trim(),
+    // Modelos en orden de preferencia; el siguiente se usa si el anterior falla.
+    AI_MODELS: listFromEnv('AI_MODELS').length > 0 ? listFromEnv('AI_MODELS') : DEFAULT_AI_MODELS,
     STORE_NAME: process.env.STORE_NAME || 'nuestro ecommerce',
     PORT: process.env.PORT || 3000,
     DASHBOARD_USER: process.env.DASHBOARD_USER || 'admin',
@@ -57,8 +75,11 @@ export const config = {
 };
 
 // Validación simple
-if (!config.ANTHROPIC_API_KEY) {
-    console.warn("⚠️ ADVERTENCIA: No se ha configurado ANTHROPIC_API_KEY en el archivo .env: el bot no podrá responder con IA.");
+if (!config.AI_API_KEY) {
+    console.warn("⚠️ ADVERTENCIA: No se ha configurado AI_API_KEY en el archivo .env: el bot no podrá responder con IA.");
+}
+if (config.AI_MODELS.length === 0) {
+    console.warn("⚠️ ADVERTENCIA: Falta AI_MODELS en el .env (obligatorio con AI_BASE_URL o AI_PROVIDER=openai): el bot no podrá responder con IA.");
 }
 if (!config.DASHBOARD_PASSWORD) {
     console.warn("⚠️ ADVERTENCIA: Falta DASHBOARD_PASSWORD: el panel no aceptará ingresos hasta configurarla.");

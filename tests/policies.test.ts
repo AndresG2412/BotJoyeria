@@ -70,11 +70,12 @@ test('valida los horarios presenciales', () => {
     assert.match(`${APPOINTMENT_CITY} ${APPOINTMENT_ADDRESS}`, /Pitalito.*Calle 4/);
 });
 
-test('rechaza archivos y contenido multimedia entrante', () => {
-    for (const type of ['image', 'document', 'audio', 'video', 'sticker']) {
+test('rechaza archivos y contenido multimedia entrante, salvo fotos', () => {
+    for (const type of ['document', 'audio', 'video', 'sticker']) {
         assert.equal(isUnsupportedInboundType(type), true, type);
     }
     assert.equal(isUnsupportedInboundType('text'), false);
+    assert.equal(isUnsupportedInboundType('image'), false);
     assert.match(UNSUPPORTED_FILE_RESPONSE, /catálogo/i);
 });
 

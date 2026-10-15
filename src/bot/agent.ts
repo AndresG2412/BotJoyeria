@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type OpenAI from 'openai';
+import OpenAI from 'openai';
 import { config } from '../config/env';
-import { AssistantReply, fromClaudeMessage, toClaudeMessages, toClaudeToolChoice, toClaudeTools } from './claude';
+import { AssistantReply, fromClaudeMessage, fromOpenAIMessage, toClaudeMessages, toClaudeToolChoice, toClaudeTools } from './claude';
 import { logger } from '../utils/logger';
 import { botTools, executeTool, getPendingImages, PendingImage } from './tools';
 import { getMemory, saveMemory, getSessionLastActivity, clearSession, getSession, checkPendingAppointment, setSessionAppointmentFlag } from '../data/database';
@@ -22,17 +22,17 @@ const MODEL_TIMEOUT_MS = 20 * 1000;  // Si un modelo no responde, pasar al sigui
 const aiLimiter = createLimiter(config.BOT_MAX_CONCURRENT_CONVERSATIONS);
 
 // ─────────────────────────────────────────
-//  Cascada de modelos (Claude)
+//  Cascada de modelos
 // ─────────────────────────────────────────
-// `effort`: el modelo acepta output_config.effort y el pensamiento se puede apagar.
-// Claude Haiku 4.5 no los acepta (HTTP 400), así que va sin esos parámetros.
+// Proveedor, URL y modelos vienen del .env (AI_PROVIDER, AI_BASE_URL, AI_MODELS).
+// `effort`: el modelo acepta output_config.effort y apagar el pensamiento extendido
+// (Claude Haiku 5.5). Haiku 4.5 y otros proveedores responden 400 o lo ignoran.
 export type ModelEntry = { id: string; effort: boolean };
 
-const MODEL_CASCADE: ModelEntry[] = [
-    { id: 'claude-haiku-5-5', effort: true  },
-    { id: 'claude-haiku-4-5', effort: false },
-    // Todos con herramientas: sin acceso al catálogo un modelo inventaba piezas y precios.
-];
+const EFFORT_MODELS = new Set(['claude-haiku-5-5']);
+
+// Todos con herramientas: sin acceso al catálogo un modelo inventaba piezas y precios.
+const MODEL_CASCADE: ModelEntry[] = config.AI_MODELS.map(id => ({ id, effort: EFFORT_MODELS.has(id) }));
 
 // Tope de salida por respuesta. Las respuestas cortas las pide el prompt; esto solo
 // evita que una respuesta desbocada gaste de más (el texto no debería acercarse).
@@ -62,49 +62,70 @@ type ChatParams = {
     tool_choice?: OpenAI.Chat.Completions.ChatCompletionToolChoiceOption;
 };
 
+/** Una llamada con el formato de Anthropic (Claude, o DeepSeek en /anthropic). */
+async function callAnthropicFormat(entry: ModelEntry, apiKey: string, params: ChatParams): Promise<AssistantReply> {
+    const { system, messages } = toClaudeMessages(params.messages);
+    // Sin reintentos internos del SDK: la cascada ya prueba otra key/modelo
+    // y el cliente no debe esperar minutos por un modelo saturado.
+    const client = new Anthropic({ apiKey, baseURL: config.AI_BASE_URL || undefined, maxRetries: 0, timeout: MODEL_TIMEOUT_MS });
+    const result = await client.messages.create({
+        model: entry.id,
+        max_tokens: MAX_OUTPUT_TOKENS,
+        system,
+        messages,
+        ...(params.tools.length > 0
+            ? { tools: toClaudeTools(params.tools), tool_choice: toClaudeToolChoice(params.tool_choice) }
+            : {}),
+        // Chat de WhatsApp: respuestas rápidas y baratas. Sin pensamiento extendido
+        // tampoco hay bloques de pensamiento que conservar al recortar el historial.
+        ...(entry.effort
+            ? { thinking: { type: 'disabled' as const }, output_config: { effort: 'low' as const } }
+            : {}),
+    });
+    if (result.stop_reason === 'refusal') {
+        logger.warn(`Cascada: ${entry.id} declinó responder (${result.stop_details?.category ?? 'sin categoría'}).`);
+    }
+    return fromClaudeMessage(result);
+}
+
+/** Una llamada con el formato de OpenAI (DeepSeek y las plataformas que lo revenden). */
+async function callOpenAIFormat(entry: ModelEntry, apiKey: string, params: ChatParams): Promise<AssistantReply> {
+    const client = new OpenAI({ apiKey, baseURL: config.AI_BASE_URL || undefined, maxRetries: 0, timeout: MODEL_TIMEOUT_MS });
+    const result = await client.chat.completions.create({
+        model: entry.id,
+        max_tokens: MAX_OUTPUT_TOKENS,
+        messages: params.messages,
+        ...(params.tools.length > 0 ? { tools: params.tools, tool_choice: params.tool_choice ?? 'auto' } : {}),
+    });
+    const message = result.choices[0]?.message;
+    return fromOpenAIMessage(message);
+}
+
 async function createWithCascade(
     cascade: ModelEntry[],
     apiKeys: string[],
     params: ChatParams
 ): Promise<AssistantReply> {
-    const { system, messages } = toClaudeMessages(params.messages);
-    const tools = toClaudeTools(params.tools);
-    const toolChoice = toClaudeToolChoice(params.tool_choice);
+    const call = config.AI_PROVIDER === 'openai' ? callOpenAIFormat : callAnthropicFormat;
+    const isConnectionError = (err: unknown) =>
+        err instanceof Anthropic.APIConnectionError || err instanceof OpenAI.APIConnectionError;
 
-    let lastError: any = new Error('No hay ANTHROPIC_API_KEY configurada.');
+    let lastError: any = new Error('No hay AI_API_KEY o AI_MODELS configurados.');
     for (const entry of availableModels(cascade)) {
         let modelFailed = false;
         for (const apiKey of apiKeys) {
             try {
-                // Sin reintentos internos del SDK: la cascada ya prueba otra key/modelo
-                // y el cliente no debe esperar minutos por un modelo saturado.
-                const client = new Anthropic({ apiKey, maxRetries: 0, timeout: MODEL_TIMEOUT_MS });
-                const result = await client.messages.create({
-                    model: entry.id,
-                    max_tokens: MAX_OUTPUT_TOKENS,
-                    system,
-                    messages,
-                    tools,
-                    tool_choice: toolChoice,
-                    // Chat de WhatsApp: respuestas rápidas y baratas. Sin pensamiento extendido
-                    // tampoco hay bloques de pensamiento que conservar al recortar el historial.
-                    ...(entry.effort
-                        ? { thinking: { type: 'disabled' as const }, output_config: { effort: 'low' as const } }
-                        : {}),
-                });
+                const reply = await call(entry, apiKey, params);
                 if (entry.id !== cascade[0].id) {
                     logger.warn(`Cascada: ${cascade[0].id} falló, usando ${entry.id}`);
                 }
-                if (result.stop_reason === 'refusal') {
-                    logger.warn(`Cascada: ${entry.id} declinó responder (${result.stop_details?.category ?? 'sin categoría'}).`);
-                }
-                return fromClaudeMessage(result);
+                return reply;
             } catch (err: any) {
                 lastError = err;
                 const status = err.status ?? err.statusCode;
-                const isTimeout = err instanceof Anthropic.APIConnectionError;
-                if (status === 401 || status === 403) {
-                    // Key inválida o sin permiso: se prueba la otra key, si hay.
+                const isTimeout = isConnectionError(err);
+                if (status === 401 || status === 402 || status === 403) {
+                    // Key inválida, sin saldo o sin permiso: se prueba la otra key, si hay.
                     logger.warn(`Cascada: key ...${apiKey.slice(-4)} rechazada (HTTP ${status}).`);
                     continue;
                 }
@@ -123,6 +144,24 @@ async function createWithCascade(
         if (modelFailed) coolDownModel(entry.id);
     }
     throw lastError;
+}
+
+/** Prueba rápida de cada modelo configurado (panel): "✅ OK" o el error, sin la key. */
+export async function testConfiguredModels(): Promise<Record<string, string>> {
+    const apiKeys = [config.AI_API_KEY, config.AI_API_KEY_2].filter(Boolean);
+    const results: Record<string, string> = {};
+    for (const entry of MODEL_CASCADE) {
+        try {
+            const reply = await createWithCascade([entry], apiKeys, {
+                messages: [{ role: 'user', content: 'Responde solo: OK' }],
+                tools: [],
+            });
+            results[entry.id] = `✅ ${reply.content ?? ''}`;
+        } catch (err: any) {
+            results[entry.id] = `❌ ${err.status ?? ''} ${String(err.message ?? '').substring(0, 80)}`;
+        }
+    }
+    return results;
 }
 
 // ─────────────────────────────────────────
@@ -180,6 +219,44 @@ async function getOrCreateSession(
     // El historial se guarda sin las instrucciones: se ponen frescas en cada mensaje.
     const mem = await getMemory(sessionId);
     return [{ role: 'system', content: systemPrompt }, ...mem];
+}
+
+export type CustomerPhoto = { mimetype: string; data: string };
+
+/** Texto que queda en el historial en lugar de la foto del cliente (la imagen no se guarda). */
+export function photoPlaceholder(caption: string): string {
+    const text = caption.trim();
+    return text ? `[El cliente envió una foto] ${text}` : '[El cliente envió una foto]';
+}
+
+/**
+ * Mensajes tal como los ve el modelo: todo en texto (historiales viejos podían traer partes
+ * de imagen) salvo el mensaje del cliente de este turno, que lleva la foto si la envió.
+ */
+export function messagesForModel(
+    messages: OpenAI.Chat.ChatCompletionMessageParam[],
+    photoMessage: OpenAI.Chat.ChatCompletionMessageParam,
+    photo?: CustomerPhoto,
+): OpenAI.Chat.ChatCompletionMessageParam[] {
+    return messages.map(msg => {
+        if (photo && msg === photoMessage) {
+            return {
+                role: 'user',
+                content: [
+                    { type: 'text', text: String(msg.content) },
+                    { type: 'image_url', image_url: { url: `data:${photo.mimetype};base64,${photo.data}` } },
+                ],
+            };
+        }
+        if (Array.isArray(msg.content)) {
+            const text = (msg.content as any[])
+                .filter(part => part?.type === 'text')
+                .map(part => part.text)
+                .join(' ') || '[imagen]';
+            return { ...msg, content: text } as OpenAI.Chat.ChatCompletionMessageParam;
+        }
+        return msg;
+    });
 }
 
 /**
@@ -319,7 +396,7 @@ export function handleUserMessage(
     senderPhone: string,
     userText: string,
     systemPrompt: string,
-    media?: { mimetype: string; data: string }
+    media?: CustomerPhoto
 ): Promise<BotResponse> {
     return aiLimiter(async () => {
         try {
@@ -337,7 +414,7 @@ async function processUserMessage(
     senderPhone: string,
     userText: string,
     systemPrompt: string,
-    media?: { mimetype: string; data: string }
+    media?: CustomerPhoto
 ): Promise<BotResponse> {
 
     // ── Datos del store (para Calendar y PQR email) ──
@@ -419,7 +496,7 @@ async function processUserMessage(
     // Solo si el cliente únicamente saludó; si ya preguntó algo ("Hola\nBusco un anillo"),
     // el modelo responde directamente a su consulta.
     const isNewSession = history.length === 1 && history[0].role === 'system';
-    if (isNewSession && (!userText.trim() || isGreeting(userText))) {
+    if (isNewSession && !media && (!userText.trim() || isGreeting(userText))) {
         const welcomeMsg = 'Hola, soy Mr. 18Kilates. ¿Ya tienes en mente una joya, estás explorando opciones o quieres diseñar una pieza única?';
         history.push({ role: 'user',      content: userText || 'Hola' });
         history.push({ role: 'assistant', content: welcomeMsg });
@@ -442,39 +519,26 @@ async function processUserMessage(
         return singleResponse(policyResponse);
     }
 
-    // ── API keys (Anthropic) ──
-    const apiKeys = [config.ANTHROPIC_API_KEY, config.ANTHROPIC_API_KEY_2].filter(Boolean);
+    // ── API keys del proveedor de IA ──
+    const apiKeys = [config.AI_API_KEY, config.AI_API_KEY_2].filter(Boolean);
 
     // ── Mensaje del usuario ──
-    const contentPayload: any = media
-        ? [
-            { type: 'text', text: userText || '¿Qué ves en esta foto?' },
-            { type: 'image_url', image_url: { url: `data:${media.mimetype};base64,${media.data}` } },
-          ]
-        : (userText || 'El usuario envió un archivo sin texto.');
-
-    history.push({ role: 'user', content: contentPayload });
+    // La foto del cliente nunca se guarda: en el historial queda un texto y la imagen
+    // solo viaja al modelo en este turno (egress de Supabase y Ley 1581).
+    const userMessage: OpenAI.Chat.ChatCompletionUserMessageParam = {
+        role: 'user',
+        content: media ? photoPlaceholder(userText) : (userText || 'El usuario envió un archivo sin texto.'),
+    };
+    history.push(userMessage);
 
     await saveMemory(sessionId, storeId, senderPhone, history);
 
-    const historyForModel = trimHistory(history, MAX_HISTORY_LENGTH);
-
-    // ── Sanitizar historial (quitar image_url para modelos que no lo soporten) ──
-    const sanitizedHistory = historyForModel.map(msg => {
-        if (Array.isArray((msg as any).content)) {
-            const text = (msg as any).content
-                .filter((p: any) => p.type === 'text')
-                .map((p: any) => p.text)
-                .join(' ') || '[imagen]';
-            return { ...msg, content: text };
-        }
-        return msg;
-    }) as OpenAI.Chat.ChatCompletionMessageParam[];
+    const toModel = (messages: OpenAI.Chat.ChatCompletionMessageParam[]) => messagesForModel(messages, userMessage, media);
 
     try {
         let responseMessage = await createWithCascade(
             MODEL_CASCADE, apiKeys,
-            { messages: sanitizedHistory, tools: botTools, tool_choice: 'auto' }
+            { messages: toModel(trimHistory(history, MAX_HISTORY_LENGTH)), tools: botTools, tool_choice: 'auto' }
         );
 
         // ── Bucle de tool calls ──
@@ -516,7 +580,7 @@ async function processUserMessage(
 
             responseMessage = await createWithCascade(
                 MODEL_CASCADE, apiKeys,
-                { messages: history, tools: botTools, tool_choice: 'auto' }
+                { messages: toModel(history), tools: botTools, tool_choice: 'auto' }
             );
         }
 
@@ -542,7 +606,7 @@ async function processUserMessage(
                     MODEL_CASCADE,
                     apiKeys,
                     {
-                        messages: history,
+                        messages: toModel(history),
                         tools: botTools,
                         tool_choice: { type: 'function', function: { name: 'schedule_appointment' } },
                     }
@@ -561,7 +625,7 @@ async function processUserMessage(
                     }
                     const finalCall = await createWithCascade(
                         MODEL_CASCADE, apiKeys,
-                        { messages: history, tools: botTools, tool_choice: 'auto' }
+                        { messages: toModel(history), tools: botTools, tool_choice: 'auto' }
                     );
                     finalContent = finalCall.content || finalContent;
                 }

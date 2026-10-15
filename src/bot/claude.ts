@@ -140,6 +140,16 @@ export function toClaudeToolChoice(choice: ChatToolChoice | undefined): Anthropi
     return { type: 'auto' };
 }
 
+/** Respuesta de un proveedor con formato de OpenAI → texto + tool_calls (lo mismo que guarda el historial). */
+export function fromOpenAIMessage(message: OpenAI.Chat.ChatCompletionMessage | undefined): AssistantReply {
+    const toolCalls = (message?.tool_calls ?? []).filter(call => call.type === 'function');
+    return {
+        role: 'assistant',
+        content: message?.content?.trim() || null,
+        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+    };
+}
+
 /** Pasa la respuesta de Claude al formato que guarda el historial (texto + tool_calls). */
 export function fromClaudeMessage(message: Anthropic.Message): AssistantReply {
     const text = message.content
