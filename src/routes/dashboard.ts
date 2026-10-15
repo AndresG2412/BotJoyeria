@@ -9,7 +9,7 @@ import {
     getStoreWhatsAppHealth,
     sendWhatsAppMessage, pauseChat, resumeChat, processUnansweredMessage
 } from '../channels/whatsapp-cloud';
-import Anthropic from '@anthropic-ai/sdk';
+import { testConfiguredModels } from '../bot/agent';
 // import { v2 as cloudinary } from 'cloudinary';
 import { config } from '../config/env';
 import { logger } from '../utils/logger';
@@ -363,27 +363,9 @@ for (const route of ['/api/categorias', '/api/categorias/:id', '/api/products', 
 //  UTILIDADES
 // ─────────────────────────────────────────
 
-/** GET /api/test-models — prueba rápida de modelos disponibles (superadmin) */
+/** GET /api/test-models — prueba rápida de los modelos de IA configurados (superadmin) */
 dashboardRouter.get('/api/test-models', checkSuperAdmin, async (_req: Request, res: Response) => {
-    const models = ['claude-haiku-5-5', 'claude-haiku-4-5'];
-    const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, maxRetries: 0 });
-    const results: Record<string, string> = {};
-
-    for (const model of models) {
-        try {
-            const r = await anthropic.messages.create({
-                model,
-                max_tokens: 256, // deja espacio si el modelo piensa antes de responder
-                messages: [{ role: 'user', content: 'Responde solo: OK' }],
-            });
-            const text = r.content.find(block => block.type === 'text');
-            results[model] = `✅ ${text?.type === 'text' ? text.text.trim() : ''}`;
-        } catch (err: any) {
-            results[model] = `❌ ${err.status ?? ''} ${err.message?.substring(0, 60)}`;
-        }
-    }
-
-    res.json(results);
+    res.json(await testConfiguredModels());
 });
 
 // ─────────────────────────────────────────

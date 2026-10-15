@@ -6,7 +6,7 @@ Bot conversacional con IA para atencion al cliente via WhatsApp Cloud API oficia
 
 - **Node.js** >= 18
 - **Base de la tienda** (Supabase) con el esquema `bot` creado (`supabase/002_bot_schema.sql`)
-- **API key de Anthropic** (Claude Haiku) en https://platform.claude.com
+- **API key de IA**: Anthropic (Claude Haiku) o un proveedor compatible con OpenAI, como DeepSeek (ver `AI_*`)
 - **Cuenta de Meta Developer** (para WhatsApp Cloud API)
 - **Cuenta de Resend** (para notificaciones por email, opcional)
 - **Google Cloud** con Calendar API habilitada (opcional, para agendar citas)
@@ -41,8 +41,11 @@ Copia `.env.example` a `.env` y completa **todas** las variables marcadas como R
 
 | Variable | Descripcion |
 |---|---|
-| `ANTHROPIC_API_KEY` | API key de Anthropic. El bot usa `claude-haiku-5-5` y, si falla, `claude-haiku-4-5` |
-| `ANTHROPIC_API_KEY_2` | (Opcional) Segunda key, si la primera es rechazada o se queda sin cuota |
+| `AI_PROVIDER` | Formato de la API de IA: `anthropic` (por defecto) u `openai` (DeepSeek y plataformas compatibles) |
+| `AI_API_KEY` | Key del proveedor de IA (también se acepta `ANTHROPIC_API_KEY`) |
+| `AI_API_KEY_2` | (Opcional) Segunda key, si la primera es rechazada o se queda sin cuota |
+| `AI_BASE_URL` | (Opcional) URL de la API; vacía = API oficial. Con otra URL, `AI_MODELS` es obligatorio |
+| `AI_MODELS` | (Opcional) Modelos en orden de preferencia, separados por coma. Por defecto `claude-haiku-5-5,claude-haiku-4-5`. Deben aceptar herramientas e imágenes |
 | `BOT_DATABASE_URL` | Conexion al esquema `bot` de la base de la tienda con el rol `bot_joyeria` (ver `supabase/README.md`) |
 | `BOT_DATABASE_CA_PATH` | (Opcional) Certificado de Supabase; por defecto `supabase-ca.crt` en la raiz |
 | `HUMAN_TAKEOVER_HOURS` | (Opcional) Coexistencia: horas que el bot se aparta de un chat cuando la joyeria contesta desde el celular. Default 4 |
@@ -122,8 +125,8 @@ Configura el token del bot directamente en la base de datos (tabla `stores`, col
 src/
   app.ts              # Servidor Express + inicio de bots
   bot/
-    agent.ts          # Agente conversacional (Claude Haiku)
-    claude.ts         # Traduce el historial guardado al formato de Claude
+    agent.ts          # Agente conversacional (proveedor de IA configurable)
+    claude.ts         # Traduce el historial guardado al formato de Anthropic
     prompts.ts        # System prompts
     tools.ts          # Tools/Functions disponibles para el LLM
   channels/
@@ -171,7 +174,7 @@ solucion de problemas).
 ## Tecnologias
 
 - TypeScript, Node.js, Express
-- Claude API (Anthropic): Claude Haiku 5.5, con Haiku 4.5 de respaldo
+- IA configurable: Claude API (Anthropic) o API compatible con OpenAI (DeepSeek)
 - Supabase (PostgreSQL + Storage)
 - Drizzle ORM
 - WhatsApp Cloud API oficial

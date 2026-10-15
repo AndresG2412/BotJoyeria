@@ -4,7 +4,7 @@ import axios from 'axios';
 import sharp from 'sharp';
 import { logger, maskPhone } from '../utils/logger';
 import { config } from '../config/env';
-import { handleUserMessage } from '../bot/agent';
+import { CustomerPhoto, handleUserMessage, photoPlaceholder } from '../bot/agent';
 import { db } from '../data/connection';
 import { getSession, setSessionPause, checkRateLimit, incrementMessageCount, getMemory, saveMemory, getStalePausedSessions, isHumanAttending, markHumanReply } from '../data/database';
 import { resolveSystemPrompt } from '../bot/prompts';
@@ -37,6 +37,7 @@ type InboundMessage = {
     from_user_id?: string;
     type?: string;
     text?: { body?: string };
+    image?: { id?: string; mime_type?: string; caption?: string };
     interactive?: {
         button_reply?: { title?: string };
         list_reply?: { title?: string };
@@ -92,6 +93,8 @@ type Conversation = {
 type PendingBatch = {
     conversation: Conversation;
     texts: string[];
+    // Foto del cliente (id de Meta). Si manda varias seguidas se usa la última: una imagen por turno.
+    photoId?: string;
     lastMessageId?: string;
     firstAt: number;
     timer: NodeJS.Timeout;
@@ -101,6 +104,12 @@ export const whatsappRouter = Router();
 
 // Formatos que WhatsApp acepta en mensajes de tipo imagen (WebP solo sirve para stickers).
 const WHATSAPP_IMAGE_TYPES = new Set(['image/jpeg', 'image/png']);
+
+// Fotos de clientes: WhatsApp no deja enviar imágenes de más de 5 MB. Se reducen antes de
+// pasarlas a la IA (menos tokens, respuesta más rápida) y nunca se guardan.
+const MAX_CUSTOMER_PHOTO_BYTES = 5 * 1024 * 1024;
+const CUSTOMER_PHOTO_MAX_SIDE = 1024;
+const PHOTO_DOWNLOAD_FAILED_RESPONSE = 'No pude ver la foto. ¿Me la envías otra vez?';
 
 const conversationQueues = new Map<string, Promise<void>>();
 const pendingBatches = new Map<string, PendingBatch>();
@@ -241,6 +250,40 @@ async function uploadMedia(credentials: WhatsAppCredentials, image: PendingImage
 
     const data = await graphPost<{ id: string }>(credentials, 'upload_media', `/${credentials.phoneNumberId}/media`, form, 30000);
     return data.id;
+}
+
+/**
+ * Descarga la foto que envió el cliente (dos pasos en Graph API: datos del archivo y luego
+ * el archivo, ambos con el token) y la deja en JPEG de máximo 1024 px. Queda solo en memoria.
+ */
+async function downloadCustomerPhoto(store: StoreRecord, mediaId: string): Promise<CustomerPhoto> {
+    const credentials = getCredentials(store);
+    assertCredentials(credentials);
+    const headers = { Authorization: `Bearer ${credentials.accessToken}` };
+    try {
+        const meta = await axios.get<{ url?: string; file_size?: number }>(graphUrl(`/${mediaId}`), { headers, timeout: 15000 });
+        if (!meta.data.url) throw new Error('Meta no devolvió la dirección de la foto');
+        if ((meta.data.file_size ?? 0) > MAX_CUSTOMER_PHOTO_BYTES) throw new Error('La foto supera 5 MB');
+        const file = await axios.get<ArrayBuffer>(meta.data.url, {
+            headers,
+            responseType: 'arraybuffer',
+            timeout: 20000,
+            maxContentLength: MAX_CUSTOMER_PHOTO_BYTES,
+        });
+        recordGraphResponse(credentials.phoneNumberId, 'download_media', true, file.status);
+        const jpeg = await sharp(Buffer.from(file.data))
+            .rotate()
+            .resize({ width: CUSTOMER_PHOTO_MAX_SIDE, height: CUSTOMER_PHOTO_MAX_SIDE, fit: 'inside', withoutEnlargement: true })
+            .flatten({ background: '#ffffff' })
+            .jpeg({ quality: 80 })
+            .toBuffer();
+        return { mimetype: 'image/jpeg', data: jpeg.toString('base64') };
+    } catch (error: any) {
+        recordGraphResponse(credentials.phoneNumberId, 'download_media', false, error?.response?.status ?? null);
+        const message = error?.response ? describeGraphError(error) : (error?.message || 'error desconocido');
+        recordError(credentials.phoneNumberId, 'download_media', message);
+        throw new Error(message);
+    }
 }
 
 async function sendImageMessage(store: StoreRecord | null, to: string, image: PendingImage): Promise<void> {
@@ -400,9 +443,20 @@ function buildConversation(store: StoreRecord, phoneNumberId: string, senderPhon
     };
 }
 
-async function runBotResponse(conversation: Conversation, userText: string): Promise<void> {
+async function runBotResponse(conversation: Conversation, userText: string, photoId?: string): Promise<void> {
     const { store, senderPhone } = conversation;
     const sessionId = sessionIdFor(conversation);
+
+    let photo: CustomerPhoto | undefined;
+    if (photoId) {
+        try {
+            photo = await downloadCustomerPhoto(store, photoId);
+        } catch (error: any) {
+            logger.error(`WhatsApp: no se pudo descargar la foto del cliente en ${sessionId}: ${error.message}`);
+            await sendTextMessage(store, senderPhone, PHOTO_DOWNLOAD_FAILED_RESPONSE);
+            return;
+        }
+    }
 
     const aiResponse = await handleUserMessage(
         sessionId,
@@ -410,6 +464,7 @@ async function runBotResponse(conversation: Conversation, userText: string): Pro
         senderPhone,
         userText,
         resolveSystemPrompt(store.systemPrompt),
+        photo,
     );
 
     // Si alguien de la joyería contestó desde el celular mientras la IA pensaba, el bot calla.
@@ -463,7 +518,7 @@ async function runWebProductLeadResponse(
  * Cola por conversación: los mensajes de un mismo cliente se procesan en orden,
  * mientras que clientes distintos avanzan en paralelo (limitados en el agente).
  */
-function enqueueConversation(conversation: Conversation, userText: string, lastMessageId?: string): void {
+function enqueueConversation(conversation: Conversation, userText: string, lastMessageId?: string, photoId?: string): void {
     const sessionId = sessionIdFor(conversation);
     const currentQueue = conversationQueues.get(conversation.key) || Promise.resolve();
     const nextQueue = currentQueue
@@ -472,12 +527,12 @@ function enqueueConversation(conversation: Conversation, userText: string, lastM
             if (session?.isPaused || isHumanAttending(session)) {
                 // Un asesor tomó el chat mientras se agrupaban los mensajes: se guardan para que los vea.
                 const history = await getMemory(sessionId);
-                history.push({ role: 'user', content: userText });
+                history.push({ role: 'user', content: photoId ? photoPlaceholder(userText) : userText });
                 await saveMemory(sessionId, conversation.store.id, conversation.senderPhone, history);
                 return;
             }
             await showTypingIndicator(conversation.store, lastMessageId);
-            await runBotResponse(conversation, userText);
+            await runBotResponse(conversation, userText, photoId);
         })
         .catch(error => logger.error(`Error en cola Cloud API [${conversation.key}]: ${error.message}`))
         .finally(() => {
@@ -525,7 +580,8 @@ function takePendingBatch(key: string): string[] {
     if (!batch) return [];
     pendingBatches.delete(key);
     clearTimeout(batch.timer);
-    return batch.texts;
+    const texts = batch.texts.filter(Boolean);
+    return batch.photoId ? [...texts, photoPlaceholder('')] : texts;
 }
 
 function flushBatch(key: string): void {
@@ -537,14 +593,14 @@ function flushBatch(key: string): void {
     if (batch.texts.length > 1) {
         logger.info(`Conversación ${key}: ${batch.texts.length} mensajes agrupados en una sola solicitud.`);
     }
-    enqueueConversation(batch.conversation, batch.texts.join('\n'), batch.lastMessageId);
+    enqueueConversation(batch.conversation, batch.texts.filter(Boolean).join('\n'), batch.lastMessageId, batch.photoId);
 }
 
 /**
  * Agrupa mensajes consecutivos: espera WHATSAPP_BATCH_QUIET_MS de silencio tras el último
  * mensaje, pero nunca más de WHATSAPP_BATCH_MAX_WAIT_MS desde el primero.
  */
-function addToBatch(conversation: Conversation, text: string, messageId?: string): void {
+function addToBatch(conversation: Conversation, text: string, messageId?: string, photoId?: string): void {
     const now = Date.now();
     const existing = pendingBatches.get(conversation.key);
     const firstAt = existing?.firstAt ?? now;
@@ -556,6 +612,7 @@ function addToBatch(conversation: Conversation, text: string, messageId?: string
     pendingBatches.set(conversation.key, {
         conversation,
         texts: [...(existing?.texts || []), text],
+        photoId: photoId || existing?.photoId,
         lastMessageId: messageId || existing?.lastMessageId,
         firstAt,
         timer: setTimeout(() => flushBatch(conversation.key), delay),
@@ -572,7 +629,9 @@ async function processInboundMessage(envelope: InboundEnvelope): Promise<void> {
     const senderPhone = message.from
         ? normalizePhone(message.from)
         : (message.from_user_id || '').trim();
-    const userText = extractMessageText(message);
+    // Fotos: el texto es el pie de foto (puede venir vacío).
+    const photoId = message.type === 'image' ? message.image?.id : undefined;
+    const userText = photoId ? (message.image?.caption?.trim() || '') : extractMessageText(message);
     logger.info(`WhatsApp: mensaje entrante ${message.id || 'sin id'} de ${senderPhone || 'sin identificador'} (${message.type || 'sin tipo'})`);
     if (!senderPhone) {
         logger.warn(`WhatsApp: mensaje sin identificador de remitente (id ${message.id || 'desconocido'})`);
@@ -589,7 +648,7 @@ async function processInboundMessage(envelope: InboundEnvelope): Promise<void> {
     const sessionId = sessionIdFor(conversation);
     const currentSession = await getSession(sessionId);
 
-    if (!userText) {
+    if (!userText && !photoId) {
         // Si la joyería está atendiendo desde el celular, el bot no interviene ni con archivos.
         if (isUnsupportedInboundType(message.type) && !isHumanAttending(currentSession)) {
             logger.info(`Mensaje Cloud API no soportado rechazado: ${message.type}`);
@@ -606,7 +665,7 @@ async function processInboundMessage(envelope: InboundEnvelope): Promise<void> {
 
     if (currentSession?.isPaused || isHumanAttending(currentSession)) {
         const history = await getMemory(sessionId);
-        history.push({ role: 'user', content: userText });
+        history.push({ role: 'user', content: photoId ? photoPlaceholder(userText) : userText });
         await saveMemory(sessionId, store.id, senderPhone, history);
         return;
     }
@@ -617,7 +676,7 @@ async function processInboundMessage(envelope: InboundEnvelope): Promise<void> {
         return;
     }
 
-    const webProductLead = parseWebProductLead(userText);
+    const webProductLead = photoId ? null : parseWebProductLead(userText);
     if (webProductLead) {
         // Se procesa antes de addToBatch: el cliente ya eligió una pieza y no
         // necesita pasar por búsqueda, filtros ni preguntas de descubrimiento.
@@ -625,7 +684,7 @@ async function processInboundMessage(envelope: InboundEnvelope): Promise<void> {
         return;
     }
 
-    addToBatch(conversation, userText, message.id);
+    addToBatch(conversation, userText, message.id, photoId);
 }
 
 /**
