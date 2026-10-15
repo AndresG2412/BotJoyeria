@@ -24,15 +24,35 @@ const aiLimiter = createLimiter(config.BOT_MAX_CONCURRENT_CONVERSATIONS);
 // ─────────────────────────────────────────
 //  Cascada de modelos
 // ─────────────────────────────────────────
-// Proveedor, URL y modelos vienen del .env (AI_PROVIDER, AI_BASE_URL, AI_MODELS).
+// Proveedor principal (AI_*) y, opcional, uno de respaldo (AI_FALLBACK_*): si los modelos
+// del principal fallan o no responden, se usan los del respaldo. Ver src/config/env.ts.
 // `effort`: el modelo acepta output_config.effort y apagar el pensamiento extendido
 // (Claude Haiku 5.5). Haiku 4.5 y otros proveedores responden 400 o lo ignoran.
-export type ModelEntry = { id: string; effort: boolean };
+export type ProviderConfig = { name: string; format: 'anthropic' | 'openai'; baseURL: string; apiKeys: string[] };
+export type ModelEntry = { id: string; effort: boolean; provider?: ProviderConfig };
 
 const EFFORT_MODELS = new Set(['claude-haiku-5-5']);
 
+const PRIMARY_PROVIDER: ProviderConfig = {
+    name: 'principal',
+    format: config.AI_PROVIDER,
+    baseURL: config.AI_BASE_URL,
+    apiKeys: [config.AI_API_KEY, config.AI_API_KEY_2].filter(Boolean),
+};
+const FALLBACK_PROVIDER: ProviderConfig = {
+    name: 'respaldo',
+    format: config.AI_FALLBACK_PROVIDER,
+    baseURL: config.AI_FALLBACK_BASE_URL,
+    apiKeys: [config.AI_FALLBACK_API_KEY, config.AI_FALLBACK_API_KEY_2].filter(Boolean),
+};
+
 // Todos con herramientas: sin acceso al catálogo un modelo inventaba piezas y precios.
-const MODEL_CASCADE: ModelEntry[] = config.AI_MODELS.map(id => ({ id, effort: EFFORT_MODELS.has(id) }));
+const MODEL_CASCADE: ModelEntry[] = [
+    ...config.AI_MODELS.map(id => ({ id, effort: EFFORT_MODELS.has(id), provider: PRIMARY_PROVIDER })),
+    ...(FALLBACK_PROVIDER.apiKeys.length > 0
+        ? config.AI_FALLBACK_MODELS.map(id => ({ id, effort: EFFORT_MODELS.has(id), provider: FALLBACK_PROVIDER }))
+        : []),
+];
 
 // Tope de salida por respuesta. Las respuestas cortas las pide el prompt; esto solo
 // evita que una respuesta desbocada gaste de más (el texto no debería acercarse).
@@ -63,11 +83,11 @@ type ChatParams = {
 };
 
 /** Una llamada con el formato de Anthropic (Claude, o DeepSeek en /anthropic). */
-async function callAnthropicFormat(entry: ModelEntry, apiKey: string, params: ChatParams): Promise<AssistantReply> {
+async function callAnthropicFormat(entry: ModelEntry, provider: ProviderConfig, apiKey: string, params: ChatParams): Promise<AssistantReply> {
     const { system, messages } = toClaudeMessages(params.messages);
     // Sin reintentos internos del SDK: la cascada ya prueba otra key/modelo
     // y el cliente no debe esperar minutos por un modelo saturado.
-    const client = new Anthropic({ apiKey, baseURL: config.AI_BASE_URL || undefined, maxRetries: 0, timeout: MODEL_TIMEOUT_MS });
+    const client = new Anthropic({ apiKey, baseURL: provider.baseURL || undefined, maxRetries: 0, timeout: MODEL_TIMEOUT_MS });
     const result = await client.messages.create({
         model: entry.id,
         max_tokens: MAX_OUTPUT_TOKENS,
@@ -88,9 +108,9 @@ async function callAnthropicFormat(entry: ModelEntry, apiKey: string, params: Ch
     return fromClaudeMessage(result);
 }
 
-/** Una llamada con el formato de OpenAI (DeepSeek y las plataformas que lo revenden). */
-async function callOpenAIFormat(entry: ModelEntry, apiKey: string, params: ChatParams): Promise<AssistantReply> {
-    const client = new OpenAI({ apiKey, baseURL: config.AI_BASE_URL || undefined, maxRetries: 0, timeout: MODEL_TIMEOUT_MS });
+/** Una llamada con el formato de OpenAI (DeepSeek, Gemini y plataformas compatibles). */
+async function callOpenAIFormat(entry: ModelEntry, provider: ProviderConfig, apiKey: string, params: ChatParams): Promise<AssistantReply> {
+    const client = new OpenAI({ apiKey, baseURL: provider.baseURL || undefined, maxRetries: 0, timeout: MODEL_TIMEOUT_MS });
     const result = await client.chat.completions.create({
         model: entry.id,
         max_tokens: MAX_OUTPUT_TOKENS,
@@ -101,31 +121,31 @@ async function callOpenAIFormat(entry: ModelEntry, apiKey: string, params: ChatP
     return fromOpenAIMessage(message);
 }
 
-async function createWithCascade(
-    cascade: ModelEntry[],
-    apiKeys: string[],
-    params: ChatParams
-): Promise<AssistantReply> {
-    const call = config.AI_PROVIDER === 'openai' ? callOpenAIFormat : callAnthropicFormat;
+async function createWithCascade(cascade: ModelEntry[], params: ChatParams): Promise<AssistantReply> {
     const isConnectionError = (err: unknown) =>
         err instanceof Anthropic.APIConnectionError || err instanceof OpenAI.APIConnectionError;
 
+    const models = availableModels(cascade);
     let lastError: any = new Error('No hay AI_API_KEY o AI_MODELS configurados.');
-    for (const entry of availableModels(cascade)) {
+    for (const [index, entry] of models.entries()) {
+        const provider = entry.provider ?? PRIMARY_PROVIDER;
+        const call = provider.format === 'openai' ? callOpenAIFormat : callAnthropicFormat;
+        const isLastModel = index === models.length - 1;
         let modelFailed = false;
-        for (const apiKey of apiKeys) {
+        for (const apiKey of provider.apiKeys) {
             try {
                 let reply: AssistantReply;
                 try {
-                    reply = await call(entry, apiKey, params);
+                    reply = await call(entry, provider, apiKey, params);
                 } catch (firstErr) {
-                    // Una demora puntual del proveedor no debe llegarle al cliente como error.
-                    if (!isConnectionError(firstErr)) throw firstErr;
+                    // Sin más modelos de respaldo, una demora puntual se reintenta una vez
+                    // en lugar de llegarle al cliente como error.
+                    if (!isConnectionError(firstErr) || !isLastModel) throw firstErr;
                     logger.warn(`Cascada: ${entry.id} no respondió a tiempo, reintentando una vez...`);
-                    reply = await call(entry, apiKey, params);
+                    reply = await call(entry, provider, apiKey, params);
                 }
                 if (entry.id !== cascade[0].id) {
-                    logger.warn(`Cascada: ${cascade[0].id} falló, usando ${entry.id}`);
+                    logger.warn(`Cascada: ${cascade[0].id} falló, usando ${entry.id} (${provider.name})`);
                 }
                 return reply;
             } catch (err: any) {
@@ -134,7 +154,8 @@ async function createWithCascade(
                 const isTimeout = isConnectionError(err);
                 if (status === 401 || status === 402 || status === 403) {
                     // Key inválida, sin saldo o sin permiso: se prueba la otra key, si hay.
-                    logger.warn(`Cascada: key ...${apiKey.slice(-4)} rechazada (HTTP ${status}).`);
+                    logger.warn(`Cascada: key ...${apiKey.slice(-4)} (${provider.name}) rechazada (HTTP ${status}).`);
+                    modelFailed = true;
                     continue;
                 }
                 if (isTimeout || [404, 429, 500, 502, 503, 504, 529].includes(status)) {
@@ -156,17 +177,17 @@ async function createWithCascade(
 
 /** Prueba rápida de cada modelo configurado (panel): "✅ OK" o el error, sin la key. */
 export async function testConfiguredModels(): Promise<Record<string, string>> {
-    const apiKeys = [config.AI_API_KEY, config.AI_API_KEY_2].filter(Boolean);
     const results: Record<string, string> = {};
     for (const entry of MODEL_CASCADE) {
+        const label = `${entry.id} (${entry.provider?.name ?? 'principal'})`;
         try {
-            const reply = await createWithCascade([entry], apiKeys, {
+            const reply = await createWithCascade([entry], {
                 messages: [{ role: 'user', content: 'Responde solo: OK' }],
                 tools: [],
             });
-            results[entry.id] = `✅ ${reply.content ?? ''}`;
+            results[label] = `✅ ${reply.content ?? ''}`;
         } catch (err: any) {
-            results[entry.id] = `❌ ${err.status ?? ''} ${String(err.message ?? '').substring(0, 80)}`;
+            results[label] = `❌ ${err.status ?? ''} ${String(err.message ?? '').substring(0, 80)}`;
         }
     }
     return results;
@@ -527,9 +548,6 @@ async function processUserMessage(
         return singleResponse(policyResponse);
     }
 
-    // ── API keys del proveedor de IA ──
-    const apiKeys = [config.AI_API_KEY, config.AI_API_KEY_2].filter(Boolean);
-
     // ── Mensaje del usuario ──
     // La foto del cliente nunca se guarda: en el historial queda un texto y la imagen
     // solo viaja al modelo en este turno (egress de Supabase y Ley 1581).
@@ -545,7 +563,7 @@ async function processUserMessage(
 
     try {
         let responseMessage = await createWithCascade(
-            MODEL_CASCADE, apiKeys,
+            MODEL_CASCADE,
             { messages: toModel(trimHistory(history, MAX_HISTORY_LENGTH)), tools: botTools, tool_choice: 'auto' }
         );
 
@@ -587,7 +605,7 @@ async function processUserMessage(
             }
 
             responseMessage = await createWithCascade(
-                MODEL_CASCADE, apiKeys,
+                MODEL_CASCADE,
                 { messages: toModel(history), tools: botTools, tool_choice: 'auto' }
             );
         }
@@ -612,7 +630,6 @@ async function processUserMessage(
             try {
                 const forcedMsg = await createWithCascade(
                     MODEL_CASCADE,
-                    apiKeys,
                     {
                         messages: toModel(history),
                         tools: botTools,
@@ -632,7 +649,7 @@ async function processUserMessage(
                         history.push({ role: 'tool', tool_call_id: tc.id, content: result });
                     }
                     const finalCall = await createWithCascade(
-                        MODEL_CASCADE, apiKeys,
+                        MODEL_CASCADE,
                         { messages: toModel(history), tools: botTools, tool_choice: 'auto' }
                     );
                     finalContent = finalCall.content || finalContent;
@@ -679,7 +696,7 @@ async function processUserMessage(
             await saveMemory(sessionId, storeId, senderPhone, freshHistory);
             try {
                 const retryResponse = await createWithCascade(
-                    MODEL_CASCADE, apiKeys,
+                    MODEL_CASCADE,
                     { messages: freshHistory, tools: botTools, tool_choice: 'auto' }
                 );
                 const retryContent = retryResponse.content || EMPTY_REPLY_FALLBACK;

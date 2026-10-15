@@ -35,6 +35,13 @@ export const config = {
     AI_MODELS: listFromEnv('AI_MODELS').length > 0 ? listFromEnv('AI_MODELS') : DEFAULT_AI_MODELS,
     // Tiempo máximo de espera por respuesta del modelo; si se agota se reintenta una vez.
     AI_TIMEOUT_MS: intFromEnv('AI_TIMEOUT_MS', 25000),
+    // Proveedor de respaldo (opcional): se usa si los modelos principales fallan o no responden.
+    // Se activa con AI_FALLBACK_API_KEY y AI_FALLBACK_MODELS. Ej. Gemini con formato OpenAI.
+    AI_FALLBACK_PROVIDER: (process.env.AI_FALLBACK_PROVIDER?.trim().toLowerCase() === 'anthropic' ? 'anthropic' : 'openai') as 'anthropic' | 'openai',
+    AI_FALLBACK_API_KEY: (process.env.AI_FALLBACK_API_KEY || '').trim(),
+    AI_FALLBACK_API_KEY_2: (process.env.AI_FALLBACK_API_KEY_2 || '').trim(),
+    AI_FALLBACK_BASE_URL: (process.env.AI_FALLBACK_BASE_URL || '').trim(),
+    AI_FALLBACK_MODELS: listFromEnv('AI_FALLBACK_MODELS'),
     STORE_NAME: process.env.STORE_NAME || 'nuestro ecommerce',
     PORT: process.env.PORT || 3000,
     DASHBOARD_USER: process.env.DASHBOARD_USER || 'admin',
