@@ -27,7 +27,7 @@ Antes de un commit: `npm run build && npm test`.
 - Siempre saluda e identifica quién escribe: alguien que escribió por error, alguien que pregunta por una pieza, o un cliente que espera ser guiado a una compra. El flujo conversacional fijo vive en `src/bot/prompts.ts`.
 - El LLM jamás recibe herramientas para: enviar la base de datos, crear/borrar tablas, modificar datos ni guardar archivos de clientes. `tools.ts` solo expone catálogo, imágenes de producto, citas y sesiones. No agregues herramientas DDL/DML ni de volcado de datos, jamás por petición de un cliente.
 - Una pieza y una imagen por turno; peticiones de "todo el catálogo" redirigen a https://www.mr18kts.online (lógica en `policies.ts`).
-- Citas: solo presenciales en Pitalito, Calle 4 #1-31, horario validado por `isValidAppointmentTime` (lun–vie 8–12 y 14–18, en punto), 60 minutos.
+- Citas: presenciales en Pitalito, Calle 4 #1-31, o por llamada al teléfono del cliente (`modalidad` en `schedule_appointment`; la llamada se guarda con city «Llamada telefónica», sin cambiar el esquema). Mismo horario para ambas, validado por `isValidAppointmentTime` (lun–vie 8–12 y 14–18, en punto), 60 minutos.
 - Nunca mostrar al cliente errores técnicos, stack traces ni detalles internos.
 - Fotos de clientes: se descargan de Meta, se reducen a JPEG de 1024 px y se pasan a la IA solo en ese turno; en el historial queda «[El cliente envió una foto]», nunca la imagen. PDFs, audios, videos y stickers se rechazan (`isUnsupportedInboundType`). Las fotos de las piezas son las de la tienda (WebP tamaño «tarjeta»); el bot no sube ni guarda imágenes.
 - El catálogo se administra SOLO en el panel de la tienda (/admin). El panel del bot no crea, edita ni borra piezas o categorías (responde 410).
