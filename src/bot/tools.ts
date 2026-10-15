@@ -8,7 +8,7 @@ import { sendAppointmentNotification } from '../utils/mailer';
 import { isWeekend, isHoliday, nextBusinessDay } from '../utils/holidays';
 import axios from 'axios';
 import path from 'path';
-import { APPOINTMENT_ADDRESS, APPOINTMENT_CITY, APPOINTMENT_DURATION_MINUTES, APPOINTMENT_HOURS, appointmentInstant, availabilityInstruction, availabilityLabel, isAfterTodayInBogota, isValidAppointmentTime, parseAppointmentDate } from './policies';
+import { APPOINTMENT_ADDRESS, APPOINTMENT_CITY, APPOINTMENT_DURATION_MINUTES, APPOINTMENT_HOURS, AppointmentMode, CALL_APPOINTMENT_CITY, appointmentInstant, appointmentPlace, availabilityInstruction, availabilityLabel, isAfterTodayInBogota, isValidAppointmentTime, parseAppointmentDate } from './policies';
 import { parseWebProductLead, webLeadReference } from '../utils/web-product';
 
 // ─────────────────────────────────────────
@@ -163,20 +163,20 @@ export const botTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         function: {
             name: 'schedule_appointment',
             description: [
-                 'Registra una cita de atención presencial en Pitalito en Google Calendar.',
+                 'Registra una cita (presencial en Pitalito o por llamada) en Google Calendar.',
                  'SOLO llama esta función cuando el cliente haya proporcionado nombre completo, fecha y hora.',
                 'REGLAS ESTRICTAS:',
                  `- La cita dura ${APPOINTMENT_DURATION_MINUTES} minutos aproximadamente. La asesoría puede tardar más si el cliente aún está explorando opciones.`,
                  '- La fecha debe ser MÍNIMO el día siguiente al de hoy.',
-                 `- SOLO se atiende presencialmente en ${APPOINTMENT_CITY}, ${APPOINTMENT_ADDRESS}. Horario: ${APPOINTMENT_HOURS}.`,
+                 `- modalidad "presencial": en ${APPOINTMENT_CITY}, ${APPOINTMENT_ADDRESS}. modalidad "llamada": un asesor llama al teléfono del cliente. Mismo horario para ambas: ${APPOINTMENT_HOURS}.`,
                  '- SOLO se agendan días hábiles: de lunes a viernes, NUNCA sábados, domingos ni días festivos.',
                  '- La hora de inicio debe ser en punto. Las franjas válidas son 08:00–12:00 y 14:00–18:00. NUNCA permitas minutos.',
                 '- NUNCA modifiques ni canceles citas existentes. Solo crea nuevas.',
                 '- NUNCA reveles información de citas de otros clientes ni de sus fechas.',
                 '',
                 'DATOS:',
-                 '- Necesitas del cliente: client_name, phone, date y time.',
-                 `- city siempre es ${APPOINTMENT_CITY}; address siempre es ${APPOINTMENT_ADDRESS}. No preguntes ciudad de envío.`,
+                 '- Necesitas del cliente: client_name, phone, date, time y la modalidad que eligió.',
+                 '- No preguntes ciudad ni dirección: la presencial siempre es en Pitalito y la llamada es al teléfono del cliente.',
                  '- property_reference es el nombre/referencia de la pieza o "asesoría general".',
             ].join(' '),
             parameters: {
@@ -197,7 +197,12 @@ export const botTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                      appointment_type: {
                          type: 'string',
                          enum: ['asesoria_presencial', 'producto_bajo_pedido'],
-                         description: 'Tipo de cita presencial.'
+                         description: 'Motivo de la cita: asesoría general o pieza bajo pedido / para fabricar.'
+                    },
+                    modalidad: {
+                        type: 'string',
+                        enum: ['presencial', 'llamada'],
+                        description: 'presencial = en la joyería en Pitalito; llamada = un asesor llama al cliente al teléfono indicado.'
                     },
                     property_reference: {
                         type: 'string',
@@ -208,7 +213,7 @@ export const botTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                         description: 'Número de WhatsApp de 10 dígitos del cliente.'
                     }
                 },
-                 required: ['client_name', 'phone', 'date', 'time', 'appointment_type']
+                 required: ['client_name', 'phone', 'date', 'time', 'appointment_type', 'modalidad']
             }
         }
     },
@@ -397,17 +402,18 @@ export async function executeTool(
 
             // ── Agendar cita en Google Calendar ────────────────────────
             case 'schedule_appointment': {
-                const { client_name, date, time, appointment_type, property_reference, phone } = args as {
+                const { client_name, date, time, appointment_type, property_reference, phone, modalidad } = args as {
                     client_name: string;
                     date: string;
                     time: string;
                     appointment_type: 'asesoria_presencial' | 'producto_bajo_pedido';
                     property_reference?: string;
                     phone?: string;
+                    modalidad?: AppointmentMode;
                 };
 
-                const effectiveCity = APPOINTMENT_CITY;
-                const effectiveAddress = APPOINTMENT_ADDRESS;
+                const isCall = modalidad === 'llamada';
+                const { city: effectiveCity, address: effectiveAddress } = appointmentPlace(modalidad);
                 const effectiveReference = property_reference?.trim()
                     || await getWebLeadProductReference(sessionId, storeId)
                     || 'Asesoría general';
@@ -528,10 +534,10 @@ export async function executeTool(
                             summary: `${typeLabels[appointment_type]} (${effectiveCity}) — ${client_name}`,
                             description: [
                                 `Cliente: ${client_name}`,
-                                `Atención presencial: ${effectiveCity}`,
+                                isCall ? `Llamar al: ${normalizedPhone}` : `Atención presencial: ${effectiveCity}`,
                                 `WhatsApp: ${normalizedPhone}`,
                                 `Joya/interés: ${effectiveReference}`,
-                                `Dirección: ${effectiveAddress}`,
+                                isCall ? '' : `Dirección: ${effectiveAddress}`,
                                 `Tipo: ${typeLabels[appointment_type]}`,
                                 `Agendado automáticamente vía bot de WhatsApp — Mr. 18Kilates`,
                             ].filter(Boolean).join('\n'),
@@ -588,7 +594,9 @@ export async function executeTool(
                         confirmed_time: time,
                         city: effectiveCity,
                         contact_info: contactInfo,
-                        instructions_for_ai: `La cita presencial quedó registrada en ${effectiveCity}, ${effectiveAddress}. Confirma al cliente la fecha ${date} y hora ${time}. Recuérdale que solo atendemos en ${effectiveCity} y que un asesor lo llamará horas antes para confirmar. Explica que dura aproximadamente una hora, aunque la asesoría puede tardar más si aún está explorando opciones. ${contactInfo}`
+                        instructions_for_ai: isCall
+                            ? `La llamada quedó agendada. Confirma al cliente en una frase corta que un asesor lo llamará el ${date} a las ${time} al ${normalizedPhone}. ${contactInfo}`
+                            : `La cita presencial quedó registrada en ${effectiveCity}, ${effectiveAddress}. Confirma al cliente en una frase corta la fecha ${date}, la hora ${time} y la dirección, y que un asesor lo llamará antes para confirmar. ${contactInfo}`
                     });
 
                 } catch (calErr: any) {
@@ -656,19 +664,23 @@ export async function executeTool(
                         return JSON.stringify({ success: false, instructions_for_ai: 'El calendario se actualizó, pero la base de datos no confirmó el cambio. Un asesor debe revisar la cita.' });
                     }
 
+                    const pendingIsCall = pending.city === CALL_APPOINTMENT_CITY;
+                    const pendingPlace = appointmentPlace(pendingIsCall ? 'llamada' : 'presencial');
                     sendAppointmentNotification({
                         adminEmail: adminCalendarEmail,
                         clientName: pending.clientName,
-                        city: APPOINTMENT_CITY,
+                        city: pendingPlace.city,
                         date,
                         time,
                         appointmentType: pending.appointmentType,
                         phone: pending.phone,
                         propertyReference: pending.propertyReference,
-                        address: APPOINTMENT_ADDRESS,
+                        address: pendingPlace.address,
                     });
 
-                    return JSON.stringify({ success: true, confirmed_date: date, confirmed_time: time, instructions_for_ai: `La cita fue reprogramada para el ${date} a las ${time} en ${APPOINTMENT_ADDRESS}, ${APPOINTMENT_CITY}.` });
+                    return JSON.stringify({ success: true, confirmed_date: date, confirmed_time: time, instructions_for_ai: pendingIsCall
+                        ? `La llamada fue reprogramada: un asesor llamará al cliente el ${date} a las ${time}.`
+                        : `La cita fue reprogramada para el ${date} a las ${time} en ${APPOINTMENT_ADDRESS}, ${APPOINTMENT_CITY}.` });
                 } catch (error: any) {
                     logger.error(`Error reprogramando cita: ${error.message}`);
                     return JSON.stringify({ success: false, instructions_for_ai: 'No pude reprogramar la cita por un problema técnico. Un asesor te ayudará a confirmarla.' });

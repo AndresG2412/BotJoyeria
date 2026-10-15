@@ -15,6 +15,19 @@ export const UNSUPPORTED_FILE_RESPONSE =
 export const APPOINTMENT_CITY = 'Pitalito';
 export const APPOINTMENT_ADDRESS = 'Calle 4 #1-31';
 export const APPOINTMENT_DURATION_MINUTES = 60;
+
+// Las citas también pueden ser por llamada (mismos días, horas y calendario que las presenciales).
+// Se guardan en las columnas de texto city/address, sin cambiar el esquema de bot.appointments.
+export type AppointmentMode = 'presencial' | 'llamada';
+export const CALL_APPOINTMENT_CITY = 'Llamada telefónica';
+export const CALL_APPOINTMENT_ADDRESS = 'Por teléfono';
+
+/** Lugar que se guarda y se muestra según la modalidad de la cita. */
+export function appointmentPlace(mode: AppointmentMode | undefined): { city: string; address: string } {
+    return mode === 'llamada'
+        ? { city: CALL_APPOINTMENT_CITY, address: CALL_APPOINTMENT_ADDRESS }
+        : { city: APPOINTMENT_CITY, address: APPOINTMENT_ADDRESS };
+}
 export const APPOINTMENT_HOURS = 'lunes a viernes, de 8:00 AM a 12:00 PM y de 2:00 PM a 6:00 PM';
 
 /** Colombia no tiene horario de verano: siempre UTC-5. */
