@@ -325,9 +325,12 @@ async function showTypingIndicator(store: StoreRecord, messageId?: string): Prom
     }
 }
 
+// Pausa corta entre mensajes de una misma respuesta: solo para que lleguen en orden.
+const BETWEEN_MESSAGES_MS = 300;
+
 async function sendMultipleMessages(store: StoreRecord | null, to: string, messages: string[]): Promise<void> {
     for (let index = 0; index < messages.length; index++) {
-        if (index > 0) await wait(1200);
+        if (index > 0) await wait(BETWEEN_MESSAGES_MS);
         await sendTextMessage(store, to, messages[index]);
     }
 }

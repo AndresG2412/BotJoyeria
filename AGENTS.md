@@ -44,6 +44,6 @@ El bot guarda nombre y teléfono de clientes para citas. Aplica la Ley 1581 (Col
 - Coexistencia (número de la joyería en la app WhatsApp Business + Cloud API): el webhook `smb_message_echoes` trae lo que la joyería contesta desde el celular → `markHumanReply` lo guarda y pone `human_until`; mientras dure, el bot no responde ni descarta respuestas ya pensadas (`isHumanAttending`). `account_update` avisa si se desconecta. Requiere `supabase/003_human_takeover.sql`.
 - Cambios de esquema: editar `supabase/002_bot_schema.sql` (o agregar un 003) y aplicarlo en el SQL Editor; el rol `bot_joyeria` no puede crear tablas.
 - WhatsApp solo acepta JPEG/PNG: las WebP del catálogo se convierten con `sharp` al enviar.
-- Mensajes seguidos del mismo cliente se agrupan (3 s de silencio, máx. 10 s) antes de llamar a la IA; hay una cola por cliente y concurrencia limitada (`WHATSAPP_BATCH_*`, `BOT_MAX_*`).
+- Mensajes seguidos del mismo cliente se agrupan (1,5 s de silencio, máx. 5 s) antes de llamar a la IA; con la Cloud API no hay esperas para «parecer humano» (0,3 s entre mensajes, solo por orden). Si la IA no responde en `AI_TIMEOUT_MS` (25 s) se reintenta una vez; hay una cola por cliente y concurrencia limitada (`WHATSAPP_BATCH_*`, `BOT_MAX_*`).
 - El webhook exige firma válida (`META_APP_SECRET`) y token de usuario del sistema de Meta (los temporales caducan en 24 h).
 - `deploy.bat` está desactualizado (usa rama `main`; el repo usa `master`). El despliegue oficial está en `DEPLOY.md`.

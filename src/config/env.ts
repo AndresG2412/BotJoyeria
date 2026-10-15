@@ -33,6 +33,8 @@ export const config = {
     AI_BASE_URL: (process.env.AI_BASE_URL || '').trim(),
     // Modelos en orden de preferencia; el siguiente se usa si el anterior falla.
     AI_MODELS: listFromEnv('AI_MODELS').length > 0 ? listFromEnv('AI_MODELS') : DEFAULT_AI_MODELS,
+    // Tiempo máximo de espera por respuesta del modelo; si se agota se reintenta una vez.
+    AI_TIMEOUT_MS: intFromEnv('AI_TIMEOUT_MS', 25000),
     STORE_NAME: process.env.STORE_NAME || 'nuestro ecommerce',
     PORT: process.env.PORT || 3000,
     DASHBOARD_USER: process.env.DASHBOARD_USER || 'admin',
@@ -65,8 +67,10 @@ export const config = {
     // Ruta al JSON de cuenta de servicio de Google (solo para Google Calendar)
     GOOGLE_SERVICE_ACCOUNT_PATH: process.env.GOOGLE_SERVICE_ACCOUNT_PATH || '',
     // Agrupación de mensajes consecutivos del mismo cliente (WhatsApp)
-    WHATSAPP_BATCH_QUIET_MS: intFromEnv('WHATSAPP_BATCH_QUIET_MS', 3000),
-    WHATSAPP_BATCH_MAX_WAIT_MS: intFromEnv('WHATSAPP_BATCH_MAX_WAIT_MS', 10000),
+    // Con la Cloud API oficial no hay riesgo de bloqueo por responder rápido: solo se espera
+    // lo justo para juntar mensajes seguidos («hola» + «busco un anillo»).
+    WHATSAPP_BATCH_QUIET_MS: intFromEnv('WHATSAPP_BATCH_QUIET_MS', 1500),
+    WHATSAPP_BATCH_MAX_WAIT_MS: intFromEnv('WHATSAPP_BATCH_MAX_WAIT_MS', 5000),
     // Conversaciones procesándose con la IA al mismo tiempo (protege servidor y cuota)
     BOT_MAX_CONCURRENT_CONVERSATIONS: intFromEnv('BOT_MAX_CONCURRENT_CONVERSATIONS', 5),
     // Límites de calidad por mensaje entrante (no son límites oficiales de Meta)
