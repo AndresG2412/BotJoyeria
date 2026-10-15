@@ -114,8 +114,8 @@ export function availabilityLabel(stock: number): 'disponible' | 'bajo_pedido' {
 
 export function availabilityInstruction(stock: number): string {
     return availabilityLabel(stock) === 'bajo_pedido'
-        ? 'Esta pieza está disponible bajo pedido. Indica que debe separar una cita o visitarnos personalmente para confirmar disponibilidad.'
-        : 'Esta pieza aparece disponible en el catálogo.';
+        ? 'Esta pieza está disponible bajo pedido. Ofrece una cita en Pitalito o una llamada para confirmar disponibilidad.'
+        : 'Esta pieza aparece disponible en el catálogo: si el cliente quiere comprarla, compártele el enlace de la pieza para pagarla en línea.';
 }
 
 // Las fotos (`image`) sí se aceptan: el bot las mira para buscar una pieza parecida.

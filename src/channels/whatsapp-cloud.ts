@@ -446,6 +446,20 @@ function buildConversation(store: StoreRecord, phoneNumberId: string, senderPhon
     };
 }
 
+// Límite de WhatsApp para el pie de una imagen.
+const WHATSAPP_CAPTION_MAX = 1024;
+
+/**
+ * Con una sola foto, los mensajes de texto de la respuesta se unen a su pie para que lleguen
+ * juntos y en orden. Si no caben en el pie, todo se envía como antes.
+ */
+export function mergeTextIntoCaption(images: PendingImage[], texts: string[]): { images: PendingImage[]; texts: string[] } {
+    if (images.length !== 1 || texts.length === 0) return { images, texts };
+    const caption = [images[0].caption, ...texts].filter(Boolean).join('\n\n');
+    if (caption.length > WHATSAPP_CAPTION_MAX) return { images, texts };
+    return { images: [{ ...images[0], caption }], texts: [] };
+}
+
 async function runBotResponse(conversation: Conversation, userText: string, photoId?: string): Promise<void> {
     const { store, senderPhone } = conversation;
     const sessionId = sessionIdFor(conversation);
@@ -476,15 +490,21 @@ async function runBotResponse(conversation: Conversation, userText: string, phot
         return;
     }
 
-    for (const image of aiResponse.images) {
+    // WhatsApp procesa las imágenes más lento que el texto: enviadas por separado, la
+    // pregunta llegaba antes que la foto. Con una sola foto, el texto va como su pie.
+    const { images, texts } = mergeTextIntoCaption(aiResponse.images, aiResponse.messages);
+    let imageFailed = false;
+    for (const image of images) {
         try {
             await sendImageMessage(store, senderPhone, image);
         } catch (imageError: any) {
+            imageFailed = true;
             logger.error(`Error enviando imagen Cloud API [${store.id}]: ${imageError.message}`);
         }
     }
 
-    await sendMultipleMessages(store, senderPhone, aiResponse.messages);
+    // Si la foto no salió, el texto que iba en su pie se envía igual.
+    await sendMultipleMessages(store, senderPhone, imageFailed && texts.length === 0 ? aiResponse.messages : texts);
     await incrementMessageCount(sessionId);
 }
 
