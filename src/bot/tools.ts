@@ -10,6 +10,7 @@ import axios from 'axios';
 import path from 'path';
 import { APPOINTMENT_ADDRESS, APPOINTMENT_CITY, APPOINTMENT_DURATION_MINUTES, APPOINTMENT_HOURS, AppointmentMode, CALL_APPOINTMENT_CITY, appointmentInstant, appointmentPlace, availabilityInstruction, availabilityLabel, isAfterTodayInBogota, isValidAppointmentTime, parseAppointmentDate } from './policies';
 import { parseWebProductLead, webLeadReference } from '../utils/web-product';
+import { checkRepairStatus } from './repairs';
 
 // ─────────────────────────────────────────
 //  Cola temporal de imágenes pendientes
@@ -231,6 +232,21 @@ export const botTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                     time: { type: 'string', description: 'Nueva hora HH:MM en punto, entre 08:00–12:00 o 14:00–18:00.' },
                 },
                 required: ['date', 'time']
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'check_repair_status',
+            description: 'Consulta el estado de una joya que el cliente dejó en reparación en el taller de la joyería (solo lectura). La verificación la hace el sistema con el WhatsApp desde el que escribe el cliente. Úsala cuando el cliente pregunte por su reparación, con el número de orden de su recibo y/o la cédula del titular, tal como los escribió.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    numero_orden: { type: 'string', description: 'Número de orden del recibo del taller, si el cliente lo dio.' },
+                    cedula: { type: 'string', description: 'Cédula del titular de la orden, si el cliente la dio.' },
+                },
+                required: []
             }
         }
     },
@@ -695,6 +711,15 @@ export async function executeTool(
                     logger.error(`Error reprogramando cita: ${error.message}`);
                     return JSON.stringify({ success: false, instructions_for_ai: 'No pude reprogramar la cita por un problema técnico. Un asesor te ayudará a confirmarla.' });
                 }
+            }
+
+            // ── Estado de una reparación (taller de la tienda) ─────────
+            case 'check_repair_status': {
+                // El celular sale del webhook, nunca de los argumentos de la IA.
+                return await checkRepairStatus(args || {}, {
+                    sessionKey: sessionId || `${storeId}_${senderPhone}`,
+                    senderPhone,
+                });
             }
 
             // ── Cerrar conversación ─────────────────────────────────────

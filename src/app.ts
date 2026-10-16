@@ -10,6 +10,7 @@ import { logger } from './utils/logger';
 import { whatsappRouter, initializeWhatsAppCloud } from './channels/whatsapp-cloud';
 import { initializeTelegramClients, stopTelegramBot } from './channels/telegram';
 import { dashboardRouter } from './routes/dashboard';
+import { adminApiRouter } from './routes/admin-api';
 import path from 'path';
 import { eq } from 'drizzle-orm';
 import { initializeDatabase } from './data/pool';
@@ -155,6 +156,9 @@ function bootstrap() {
 
     // Rutear las peticiones de WhatsApp (Webhooks suelen ser públicos o validados internamente)
     app.use('/webhook/whatsapp', whatsappRouter);
+
+    // Chats para el admin de la tienda (servidor a servidor, con BOT_ADMIN_API_TOKEN).
+    app.use('/admin-api', rateLimit({ windowMs: 60 * 1000, max: 240 }), adminApiRouter);
 
     // Archivos estáticos públicos (CSS, Login, etc)
     app.use(express.static(path.join(__dirname, '../public')));

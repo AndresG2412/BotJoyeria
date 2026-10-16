@@ -63,6 +63,9 @@ export const config = {
     RESEND_API_KEY: process.env.RESEND_API_KEY || '',
     // Tienda pública: el catálogo se lee de su API (solo lo publicado, sin credenciales)
     SITE_URL: process.env.SITE_URL || 'https://www.mr18kts.online',
+    // Llave que usa el servidor de la tienda para ver y responder chats desde su admin
+    // (/admin-api). Vacía = ese acceso queda apagado.
+    BOT_ADMIN_API_TOKEN: process.env.BOT_ADMIN_API_TOKEN || '',
     CATALOG_CACHE_MS: intFromEnv('CATALOG_CACHE_MS', 5 * 60 * 1000),
     // Base de la tienda, esquema `bot` (sesiones y citas). Ver src/data/pool.ts.
     BOT_DATABASE_URL: process.env.BOT_DATABASE_URL || '',
