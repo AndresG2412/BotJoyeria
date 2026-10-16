@@ -27,6 +27,9 @@ function loadCa(): string | null {
 }
 
 function createPool(): Pool | null {
+    // Los tests (node --test marca NODE_TEST_CONTEXT) nunca tocan la base: el .env local apunta
+    // a la de producción, y un test que registra intentos o citas los dejaría ahí.
+    if (process.env.NODE_TEST_CONTEXT) return null;
     if (!config.BOT_DATABASE_URL) {
         logger.error('❌ Falta BOT_DATABASE_URL en el .env: el bot no podrá guardar conversaciones ni citas.');
         return null;
