@@ -56,3 +56,11 @@ test('el panel recibe las tiendas sin sus tokens, solo si están configurados', 
     assert.equal(visible.telegramTokenConfigured, false);
     assert.ok(!JSON.stringify(visible).includes('EAAsecreto'));
 });
+
+test('el nombre de perfil de WhatsApp se guarda limpio y corto', async () => {
+    const { cleanProfileName } = await import('../src/data/database');
+    assert.equal(cleanProfileName('  Laura\nGómez\u0007 '), 'Laura Gómez');
+    assert.equal(cleanProfileName('x'.repeat(100)).length, 60);
+    assert.equal(cleanProfileName(undefined), '');
+    assert.equal(cleanProfileName(42), '');
+});

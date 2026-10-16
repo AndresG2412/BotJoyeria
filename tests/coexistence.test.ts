@@ -71,3 +71,26 @@ test('el bot se aparta solo mientras dura el plazo', () => {
     assert.equal(isHumanAttending({ humanUntil: null }, now), false);
     assert.equal(isHumanAttending(null, now), false);
 });
+
+test('el nombre de perfil llega con cada mensaje, emparejado por wa_id o por user_id', () => {
+    const parsed = parseWebhookPayload({
+        object: 'whatsapp_business_account',
+        entry: [{
+            changes: [{
+                field: 'messages',
+                value: {
+                    metadata: { phone_number_id: '111' },
+                    contacts: [
+                        { wa_id: '573157870130', profile: { name: 'Laura' } },
+                        { user_id: 'CO.4478947779033820', profile: { name: 'Pedro' } },
+                    ],
+                    messages: [
+                        { id: 'a', from: '573157870130', type: 'text', text: { body: 'hola' } },
+                        { id: 'b', from_user_id: 'CO.4478947779033820', type: 'text', text: { body: 'hola' } },
+                    ],
+                },
+            }],
+        }],
+    });
+    assert.deepEqual(parsed.messages.map(m => m.profileName), ['Laura', 'Pedro']);
+});

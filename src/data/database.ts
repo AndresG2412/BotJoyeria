@@ -22,7 +22,7 @@ export function withoutSystemPrompt(messages: any[]): any[] {
 
 /** Lo justo para el panel: nunca se lee el historial completo de todas las conversaciones. */
 const SESSION_SUMMARY_COLUMNS = `
-    session_id, store_id, sender_phone, is_paused, has_appointment, human_until, updated_at,
+    session_id, store_id, sender_phone, profile_name, is_paused, has_appointment, human_until, updated_at,
     (select jsonb_build_object('role', e.m->>'role', 'content', left(e.m->>'content', 80))
        from jsonb_array_elements(s.messages) with ordinality as e(m, i)
       where e.m->>'role' in ('user', 'assistant') and jsonb_typeof(e.m->'content') = 'string'
@@ -111,6 +111,7 @@ export const getSessionSummaries = async (storeId?: string, limit = 200) => {
             sessionId: row.session_id,
             storeId: row.store_id || 'default',
             phone: phoneOf(row),
+            profileName: row.profile_name || '',
             isPaused: row.is_paused || false,
             humanUntil: row.human_until ? new Date(row.human_until) : null,
             hasAppointment: row.has_appointment || false,
@@ -134,6 +135,7 @@ export const getSessionDetail = async (sessionId: string) => {
             sessionId: row.session_id,
             storeId: row.store_id || 'default',
             phone: phoneOf(row),
+            profileName: row.profile_name || '',
             isPaused: row.is_paused || false,
             humanUntil: row.human_until ? new Date(row.human_until) : null,
             history: withoutSystemPrompt(row.messages),
@@ -251,19 +253,39 @@ export const getMemory = async (sessionId: string): Promise<any[]> => {
     return [];
 };
 
+/**
+ * El nombre de perfil de WhatsApp de cada chat, esperando al próximo saveMemory (que es el que
+ * crea la fila). Solo lo ve el dueño en el panel; se borra con el chat (purgeInactiveSessions).
+ */
+const pendingProfileNames = new Map<string, string>();
+
+/** Nombre de perfil limpio: sin saltos ni caracteres de control, máximo 60. Vacío si no sirve. */
+export function cleanProfileName(name: unknown): string {
+    if (typeof name !== 'string') return '';
+    return name.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+}
+
+export function rememberProfileName(sessionId: string, name: unknown): void {
+    const clean = cleanProfileName(name);
+    if (clean) pendingProfileNames.set(sessionId, clean);
+}
+
 export const saveMemory = async (sessionId: string, storeId: string, senderPhone: string, messages: any[]) => {
     if (!pool) return true;
+    const profileName = pendingProfileNames.get(sessionId) ?? '';
     try {
         await pool.query(
-            `insert into bot.sessions (session_id, store_id, sender_phone, messages, updated_at)
-             values ($1, $2, $3, $4::jsonb, now())
+            `insert into bot.sessions (session_id, store_id, sender_phone, messages, profile_name, updated_at)
+             values ($1, $2, $3, $4::jsonb, $5, now())
              on conflict (session_id) do update set
                 store_id = excluded.store_id,
                 sender_phone = excluded.sender_phone,
                 messages = excluded.messages,
+                profile_name = coalesce(nullif(excluded.profile_name, ''), bot.sessions.profile_name),
                 updated_at = now()`,
-            [sessionId, storeId, senderPhone, toJson(withoutSystemPrompt(messages))],
+            [sessionId, storeId, senderPhone, toJson(withoutSystemPrompt(messages)), profileName],
         );
+        pendingProfileNames.delete(sessionId);
         return true;
     } catch (e: any) {
         logger.error(`Error saving memory: ${e.message}`);
