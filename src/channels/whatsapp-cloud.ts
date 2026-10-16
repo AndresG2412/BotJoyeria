@@ -693,12 +693,6 @@ async function processInboundMessage(envelope: InboundEnvelope): Promise<void> {
         return;
     }
 
-    if (userText.toLowerCase() === '!bot') {
-        await resumeChat(sessionId);
-        await sendTextMessage(store, senderPhone, 'Bot reactivado correctamente. ¿En qué te puedo ayudar?');
-        return;
-    }
-
     if (currentSession?.isPaused || isHumanAttending(currentSession)) {
         const history = await getMemory(sessionId);
         history.push({ role: 'user', content: photoId ? photoPlaceholder(userText) : userText });
@@ -708,7 +702,8 @@ async function processInboundMessage(envelope: InboundEnvelope): Promise<void> {
 
     const limit = await checkRateLimit(sessionId, 50);
     if (!limit.allowed) {
-        await sendTextMessage(store, senderPhone, 'Has alcanzado el límite de mensajes por hoy. Podrás seguir chateando mañana. ¡Gracias!');
+        logger.warn(`Chat ${maskPhone(senderPhone)} pasó el tope de mensajes del día.`);
+        if (limit.firstBlocked) await sendTextMessage(store, senderPhone, 'Has alcanzado el límite de mensajes por hoy. Podrás seguir chateando mañana. ¡Gracias!');
         return;
     }
 
@@ -774,13 +769,21 @@ function isValidMetaSignature(req: RawBodyRequest): boolean {
     );
 }
 
+function sameSecret(received: string, expected: string): boolean {
+    const a = crypto.createHash('sha256').update(received).digest();
+    const b = crypto.createHash('sha256').update(expected).digest();
+    return crypto.timingSafeEqual(a, b);
+}
+
 whatsappRouter.get('/', (req: Request, res: Response) => {
     const mode = typeof req.query['hub.mode'] === 'string' ? req.query['hub.mode'] : '';
     const verifyToken = typeof req.query['hub.verify_token'] === 'string' ? req.query['hub.verify_token'] : '';
     const challenge = typeof req.query['hub.challenge'] === 'string' ? req.query['hub.challenge'] : '';
 
-    if (mode === 'subscribe' && verifyToken === config.META_VERIFY_TOKEN && challenge) {
-        return res.status(200).send(challenge);
+    // Meta manda un número como challenge; se devuelve como texto plano para que nadie lo use
+    // de espejo para inyectar HTML en el dominio del panel.
+    if (mode === 'subscribe' && config.META_VERIFY_TOKEN && sameSecret(verifyToken, config.META_VERIFY_TOKEN) && /^\d{1,64}$/.test(challenge)) {
+        return res.status(200).type('text/plain').send(challenge);
     }
 
     return res.sendStatus(403);

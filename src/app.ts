@@ -1,5 +1,4 @@
 import express from 'express';
-import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import crypto from 'crypto';
@@ -16,7 +15,7 @@ import { eq } from 'drizzle-orm';
 import { initializeDatabase } from './data/pool';
 import { purgeInactiveSessions } from './data/database';
 import { db } from './data/connection';
-import { users, stores } from './data/schema';
+import { stores } from './data/schema';
 
 /** Comparación en tiempo constante para no filtrar la contraseña por tiempos de respuesta. */
 function safeEqual(a: unknown, b: string): boolean {
@@ -50,16 +49,16 @@ function bootstrap() {
         contentSecurityPolicy: false,
     }));
 
+    // Meta y el panel mandan JSON pequeño (las fotos se bajan aparte): 1 MB alcanza y evita
+    // que unos pocos cuerpos gigantes sin autenticar llenen la memoria.
     app.use(express.json({
-        limit: '25mb',
+        limit: '1mb',
         verify: (req, _res, buf) => {
             // Meta firma el cuerpo exacto de la petición, antes de parsearlo como JSON.
             (req as any).rawBody = Buffer.from(buf);
         },
     }));
-    app.use(express.urlencoded({ limit: '25mb', extended: true }));
     app.use(cookieParser());
-    app.use(cors());
 
     // 2. Limitación de Peticiones
     const limiter = rateLimit({
@@ -68,6 +67,14 @@ function bootstrap() {
         message: { error: 'Demasiadas peticiones desde esta IP' }
     });
     app.use('/dashboard/api', limiter);
+
+    // Contra adivinar la contraseña del panel: 10 intentos fallidos cada 15 min por IP.
+    const loginLimiter = rateLimit({
+        windowMs: 15 * 60 * 1000,
+        max: 10,
+        skipSuccessfulRequests: true,
+        message: { error: 'Demasiados intentos. Espera unos minutos.' },
+    });
 
     // --- SISTEMA DE AUTENTICACIÓN POR COOKIE/JWT ---
 
@@ -98,46 +105,23 @@ function bootstrap() {
     };
 
     // Ruta de Login
-    app.post('/api/auth/login', async (req, res) => {
+    app.post('/api/auth/login', loginLimiter, async (req, res) => {
         try {
             const { username, password } = req.body;
             if (!username || !password) {
                 return res.status(400).json({ error: 'Faltan credenciales' });
             }
 
-            // Fallback a superadmin del .env si la tabla está vacía o es admin root
+            // El único acceso al panel es el admin del .env (no hay tabla de usuarios).
             if (config.DASHBOARD_PASSWORD && safeEqual(username, config.DASHBOARD_USER) && safeEqual(password, config.DASHBOARD_PASSWORD)) {
                 const token = jwt.sign({ user: username, role: 'superadmin', storeId: null }, config.JWT_SECRET, { expiresIn: '24h' });
                 res.cookie('auth_token', token, {
                     httpOnly: true,
-                    sameSite: 'lax',
+                    secure: true, // los navegadores la aceptan también en http://localhost
+                    sameSite: 'strict',
                     maxAge: 24 * 60 * 60 * 1000
                 });
                 return res.json({ success: true });
-            }
-
-            // Buscar en BD
-            const user = await db.query.users.findFirst({
-                where: eq(users.username, username)
-            });
-
-            if (user) {
-                // Implementación simple de hash comparativo (puedes mejorar esto con bcrypt después)
-                const hashedPass = crypto.createHash('sha256').update(password).digest('hex');
-                if (user.passwordHash === hashedPass || user.passwordHash === password) {
-                    const token = jwt.sign({
-                        user: user.username,
-                        role: user.role,
-                        storeId: user.storeId
-                    }, config.JWT_SECRET, { expiresIn: '24h' });
-
-                    res.cookie('auth_token', token, {
-                        httpOnly: true,
-                        sameSite: 'lax',
-                        maxAge: 24 * 60 * 60 * 1000
-                    });
-                    return res.json({ success: true });
-                }
             }
         } catch (e) {
             logger.error('Error en el login:', e);
@@ -170,8 +154,19 @@ function bootstrap() {
     // Rutear el panel de control con protección JWT
     app.use('/dashboard', authMiddleware, dashboardRouter);
 
-    app.listen(config.PORT, () => {
-        logger.info(`🌍 Panel de control escuchando en el puerto ${config.PORT}`);
+    // Errores no capturados (JSON mal formado, cuerpo muy grande, fallas de la base): nunca
+    // devolver el stack ni detalles internos.
+    app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+        const status = Number(err?.status || err?.statusCode) || 500;
+        if (status >= 500) logger.error('Error no controlado en una petición:', err);
+        if (res.headersSent) return;
+        res.status(status).json({ error: status >= 500 ? 'Error interno' : 'Petición inválida' });
+    });
+
+    // Solo en la máquina: el público entra por ngrok, que se conecta a localhost. Así nadie se
+    // salta ngrok ni falsifica X-Forwarded-For (ver trust proxy arriba).
+    app.listen(config.PORT, config.HOST, () => {
+        logger.info(`🌍 Panel de control escuchando en ${config.HOST}:${config.PORT}`);
         logger.info(`Accede al panel en: http://localhost:${config.PORT}/dashboard`);
     });
 

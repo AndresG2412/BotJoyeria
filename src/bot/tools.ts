@@ -401,7 +401,7 @@ export async function executeTool(
                             queueImage(sessionKey, imageUrl, caption);
                         } else {
                             const response = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 15000 });
-                            const contentType = response.headers['content-type'] || 'image/jpeg';
+                            const contentType = String(response.headers['content-type'] || 'image/jpeg');
                             const base64 = Buffer.from(response.data).toString('base64');
                             if (!pendingImagesMap.has(sessionKey)) {
                                 pendingImagesMap.set(sessionKey, []);

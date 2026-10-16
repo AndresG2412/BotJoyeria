@@ -73,8 +73,24 @@ export const setSessionPause = async (sessionId: string, isPaused: boolean) => {
     }
 };
 
-export const checkRateLimit = async (_sessionId: string, _maxMessages: number) => {
-    return { allowed: true };
+const RATE_LIMIT_WINDOW_MS = 24 * 60 * 60 * 1000;
+const recentMessages = new Map<string, number[]>();
+
+/**
+ * Tope de mensajes por chat en 24 h, para que nadie gaste la cuota de la IA a punta de mensajes.
+ * Vive en memoria: un reinicio lo pone en cero, que para este fin basta. `firstBlocked` marca el
+ * primer mensaje que se pasa del tope, el único al que se le avisa al cliente.
+ */
+export const checkRateLimit = async (sessionId: string, maxMessages: number, now = Date.now()) => {
+    const recent = (recentMessages.get(sessionId) || []).filter(at => now - at < RATE_LIMIT_WINDOW_MS);
+    recent.push(now);
+    recentMessages.set(sessionId, recent);
+    if (recentMessages.size > 10_000) {
+        for (const [key, times] of recentMessages) {
+            if (!times.some(at => now - at < RATE_LIMIT_WINDOW_MS)) recentMessages.delete(key);
+        }
+    }
+    return { allowed: recent.length <= maxMessages, firstBlocked: recent.length === maxMessages + 1 };
 };
 
 export const incrementMessageCount = async (_sessionId: string) => {

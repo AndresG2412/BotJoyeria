@@ -23,6 +23,21 @@ const DEFAULT_AI_MODELS = AI_PROVIDER === 'anthropic' && !process.env.AI_BASE_UR
     ? ['claude-haiku-5-5', 'claude-haiku-4-5']
     : [];
 
+/**
+ * Un secreto corto o con un valor de ejemplo que quedó en el historial del repo se trata como si
+ * no estuviera: es más seguro que el bot rechace el acceso que aceptar una llave adivinable.
+ */
+const KNOWN_DEFAULT_SECRETS = new Set(['admin123', 'super-secreto-ai-bot-99', 'mi_token_secreto_ecommerce']);
+const weakSecrets: string[] = [];
+function secretFromEnv(name: string, minLength: number): string {
+    const value = process.env[name] || '';
+    if (value && (value.length < minLength || KNOWN_DEFAULT_SECRETS.has(value))) {
+        weakSecrets.push(`${name} (mínimo ${minLength} caracteres, sin valores de ejemplo)`);
+        return '';
+    }
+    return value;
+}
+
 export const config = {
     AI_PROVIDER,
     // Las keys ANTHROPIC_* se siguen leyendo por compatibilidad con .env ya configurados.
@@ -43,20 +58,22 @@ export const config = {
     AI_FALLBACK_BASE_URL: (process.env.AI_FALLBACK_BASE_URL || '').trim(),
     AI_FALLBACK_MODELS: listFromEnv('AI_FALLBACK_MODELS'),
     STORE_NAME: process.env.STORE_NAME || 'nuestro ecommerce',
-    PORT: process.env.PORT || 3000,
+    PORT: Number(process.env.PORT) || 3000,
+    // Solo localhost por defecto: ngrok entra por ahí. HOST=0.0.0.0 únicamente si hay otro proxy delante.
+    HOST: process.env.HOST || '127.0.0.1',
     DASHBOARD_USER: process.env.DASHBOARD_USER || 'admin',
     // Sin contraseña en el .env no se puede entrar al panel (antes caía en 'admin123').
-    DASHBOARD_PASSWORD: process.env.DASHBOARD_PASSWORD || '',
+    DASHBOARD_PASSWORD: secretFromEnv('DASHBOARD_PASSWORD', 12),
     META_ACCESS_TOKEN: process.env.META_ACCESS_TOKEN || '',
     META_PHONE_ID: process.env.META_PHONE_ID || '',
     META_WABA_ID: process.env.META_WABA_ID || '',
     META_APP_SECRET: process.env.META_APP_SECRET || '',
-    META_VERIFY_TOKEN: process.env.META_VERIFY_TOKEN || '',
+    META_VERIFY_TOKEN: secretFromEnv('META_VERIFY_TOKEN', 16),
     META_API_VERSION: process.env.META_API_VERSION || 'v26.0',
     NGROK_AUTHTOKEN: process.env.NGROK_AUTHTOKEN || '',
     NGROK_DOMAIN: process.env.NGROK_DOMAIN || '',
     // Sin JWT_SECRET se genera uno al arrancar: las sesiones del panel se cierran al reiniciar.
-    JWT_SECRET: process.env.JWT_SECRET || crypto.randomBytes(48).toString('hex'),
+    JWT_SECRET: secretFromEnv('JWT_SECRET', 32) || crypto.randomBytes(48).toString('hex'),
     CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME || '',
     CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY || '',
     CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET || '',
@@ -64,7 +81,7 @@ export const config = {
     SITE_URL: process.env.SITE_URL || 'https://www.mr18kts.online',
     // Llave que usa el servidor de la tienda para ver y responder chats desde su admin
     // (/admin-api). Vacía = ese acceso queda apagado.
-    BOT_ADMIN_API_TOKEN: process.env.BOT_ADMIN_API_TOKEN || '',
+    BOT_ADMIN_API_TOKEN: secretFromEnv('BOT_ADMIN_API_TOKEN', 32),
     CATALOG_CACHE_MS: intFromEnv('CATALOG_CACHE_MS', 5 * 60 * 1000),
     // Base de la tienda, esquema `bot` (sesiones y citas). Ver src/data/pool.ts.
     BOT_DATABASE_URL: process.env.BOT_DATABASE_URL || '',
@@ -92,10 +109,11 @@ if (!config.AI_API_KEY) {
 if (config.AI_MODELS.length === 0) {
     console.warn("⚠️ ADVERTENCIA: Falta AI_MODELS en el .env (obligatorio con AI_BASE_URL o AI_PROVIDER=openai): el bot no podrá responder con IA.");
 }
+for (const weak of weakSecrets) {
+    console.warn(`⚠️ ADVERTENCIA: ${weak} es débil y se ignora hasta cambiarla.`);
+}
 if (!config.DASHBOARD_PASSWORD) {
     console.warn("⚠️ ADVERTENCIA: Falta DASHBOARD_PASSWORD: el panel no aceptará ingresos hasta configurarla.");
-} else if (config.DASHBOARD_PASSWORD === 'admin123' || config.DASHBOARD_PASSWORD.length < 10) {
-    console.warn("⚠️ ADVERTENCIA: DASHBOARD_PASSWORD es débil; usa al menos 10 caracteres.");
 }
 if (!process.env.JWT_SECRET) {
     console.warn("⚠️ ADVERTENCIA: Falta JWT_SECRET; se usará uno temporal y las sesiones del panel se cerrarán al reiniciar.");
