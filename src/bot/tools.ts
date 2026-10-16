@@ -1,14 +1,12 @@
 import OpenAI from 'openai';
 import { searchProducts, filterProducts, getProductById, getProductRawImages } from '../data/catalog';
 import { config } from '../config/env';
-import { clearSession, getSession, setSessionAppointmentFlag, checkPendingAppointment, getPendingAppointment, updateAppointmentSchedule, saveAppointment, getMemory } from '../data/database';
-import { google } from 'googleapis';
+import { clearSession, getSession, setSessionAppointmentFlag, checkPendingAppointment, getPendingAppointment, getMemory } from '../data/database';
+import { createAppointment, createNotification, updateAppointment } from '../data/agenda';
 import { logger } from '../utils/logger';
-import { sendAppointmentNotification } from '../utils/mailer';
-import { isWeekend, isHoliday, nextBusinessDay } from '../utils/holidays';
 import axios from 'axios';
-import path from 'path';
-import { APPOINTMENT_ADDRESS, APPOINTMENT_CITY, APPOINTMENT_DURATION_MINUTES, APPOINTMENT_HOURS, AppointmentMode, CALL_APPOINTMENT_CITY, appointmentInstant, appointmentPlace, availabilityInstruction, availabilityLabel, isAfterTodayInBogota, isValidAppointmentTime, parseAppointmentDate } from './policies';
+import { APPOINTMENT_ADDRESS, APPOINTMENT_CITY, APPOINTMENT_DURATION_MINUTES, APPOINTMENT_HOURS, AppointmentMode, CALL_APPOINTMENT_CITY, appointmentPlace, availabilityInstruction, availabilityLabel } from './policies';
+import { checkSlot, normalizeTime } from './scheduling';
 import { parseWebProductLead, webLeadReference } from '../utils/web-product';
 import { checkRepairStatus } from './repairs';
 
@@ -54,12 +52,6 @@ function queueImage(sessionId: string, base64DataUri: string, caption?: string) 
         }
         pendingImagesMap.get(sessionId)!.push({ mimetype: match[1], base64: match[2], caption });
     }
-}
-
-function calendarClient() {
-    const keyFilePath = path.resolve(process.cwd(), config.GOOGLE_SERVICE_ACCOUNT_PATH || 'google-service-account.json');
-    const auth = new google.auth.GoogleAuth({ keyFile: keyFilePath, scopes: ['https://www.googleapis.com/auth/calendar'] });
-    return google.calendar({ version: 'v3', auth });
 }
 
 /** Celular (3xx) o fijo (60x) colombiano de 10 dígitos, con o sin 57 delante; null si no es válido. */
@@ -166,7 +158,7 @@ export const botTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         function: {
             name: 'schedule_appointment',
             description: [
-                 'Registra una cita (presencial en Pitalito o por llamada) en Google Calendar.',
+                 'Registra una cita (presencial en Pitalito o por llamada) en el calendario de la joyería.',
                  'SOLO llama esta función cuando el cliente haya proporcionado nombre completo, fecha y hora.',
                 'REGLAS ESTRICTAS:',
                  `- La cita dura ${APPOINTMENT_DURATION_MINUTES} minutos aproximadamente. La asesoría puede tardar más si el cliente aún está explorando opciones.`,
@@ -247,6 +239,22 @@ export const botTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                     cedula: { type: 'string', description: 'Cédula del titular de la orden, si el cliente la dio.' },
                 },
                 required: []
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'request_human_contact',
+            description: 'Avisa al equipo de la joyería que el cliente quiere que lo llamen pronto (sin fecha ni hora fija) o que quiere hablar con un asesor por este chat. Úsala cuando el cliente lo pida explícitamente ("llámenme", "quiero hablar con alguien", "páseme con un asesor") o en reclamos y garantías. Si el cliente prefiere una hora concreta, usa schedule_appointment con modalidad "llamada".',
+            parameters: {
+                type: 'object',
+                properties: {
+                    via: { type: 'string', enum: ['llamada', 'chat'], description: 'llamada = que lo llamen al celular desde el que escribe; chat = que un asesor le escriba por este WhatsApp.' },
+                    motivo: { type: 'string', description: 'Motivo en pocas palabras, ej.: "cotizar anillo de compromiso", "reclamo por reparación".' },
+                    nombre: { type: 'string', description: 'Nombre del cliente si ya lo dio.' },
+                },
+                required: ['via']
             }
         }
     },
@@ -426,9 +434,9 @@ export async function executeTool(
                 });
             }
 
-            // ── Agendar cita en Google Calendar ────────────────────────
+            // ── Agendar cita en el calendario propio (bot.appointments) ──
             case 'schedule_appointment': {
-                const { client_name, date, time, appointment_type, property_reference, phone, modalidad } = args as {
+                const { client_name, date, time: rawTime, appointment_type, property_reference, phone, modalidad } = args as {
                     client_name: string;
                     date: string;
                     time: string;
@@ -444,20 +452,13 @@ export async function executeTool(
                     || await getWebLeadProductReference(sessionId, storeId)
                     || 'Asesoría general';
 
-                if (
-                    !client_name || !client_name.trim() ||
-                    !date || !date.trim() ||
-                    !time || !time.trim() ||
-                    !phone || !phone.trim() ||
-                    !appointment_type
-                ) {
+                if (!client_name?.trim() || !date?.trim() || !rawTime?.trim() || !phone?.trim() || !appointment_type) {
                     return JSON.stringify({
                         success: false,
                         instructions_for_ai: 'Faltan datos obligatorios para registrar la cita. Asegúrate de tener nombre completo, teléfono, fecha y hora.'
                     });
                 }
 
-                // ── Validar que el número de teléfono sea válido (10 dígitos colombianos) ──
                 const normalizedPhone = normalizeColombianMobile(phone);
                 if (!normalizedPhone) {
                     return JSON.stringify({
@@ -466,175 +467,65 @@ export async function executeTool(
                     });
                 }
 
-                // ── Verificar si ya hay una cita agendada en la base de datos o en la sesión ──
-                if (sessionId) {
-                    const hasApp = await checkPendingAppointment(storeId, senderPhone);
-                    if (hasApp) {
-                        const email = pqrEmail || adminCalendarEmail || 'el correo del administrador';
-                        return JSON.stringify({
-                            success: false,
-                            error: 'Solicitud ya agendada previamente',
-                            instructions_for_ai: `Ya existe un registro de venta previamente agendado en este chat. No puedes agendar otra ni modificarla. Dile al cliente de forma muy amable que para cambiar o coordinar debe contactar al correo del administrador: ${email}`
-                        });
-                    }
-                }
-
-                // ── Validaciones de negocio iniciales ──
-                const appointmentDate = parseAppointmentDate(date);
-                if (!appointmentDate) {
+                if (sessionId && await checkPendingAppointment(storeId, senderPhone)) {
                     return JSON.stringify({
                         success: false,
-                        instructions_for_ai: 'La fecha no es válida. Pídele al cliente que confirme el día que prefiere (de lunes a viernes).'
+                        error: 'Solicitud ya agendada previamente',
+                        instructions_for_ai: 'Este cliente ya tiene una cita o llamada pendiente. No agendes otra: si quiere cambiarla, usa reschedule_appointment con la nueva fecha y hora.'
                     });
                 }
 
-                if (!isAfterTodayInBogota(date)) {
+                const time = normalizeTime(rawTime);
+                const problem = checkSlot(date.trim(), time, { earliest: 'tomorrow' });
+                if (problem) {
                     return JSON.stringify({
                         success: false,
-                        instructions_for_ai: 'La fecha solicitada es hoy o en el pasado. Dile al cliente que la atención presencial más próxima disponible es mañana y pregúntale qué día le queda bien.'
+                        error: problem.code,
+                        instructions_for_ai: `${problem.message} Las citas son ${APPOINTMENT_HOURS}, desde mañana. Díselo al cliente con amabilidad y pídele otra fecha u hora.`
                     });
                 }
 
-                // ── Validar que el día sea hábil (lunes a viernes, sin festivos) ──
-                if (isWeekend(appointmentDate) || isHoliday(appointmentDate)) {
-                    const nextBusiness = nextBusinessDay(appointmentDate);
-                    const nextBusinessStr = `${nextBusiness.getFullYear()}-${String(nextBusiness.getMonth() + 1).padStart(2, '0')}-${String(nextBusiness.getDate()).padStart(2, '0')}`;
-                    const dayName = isWeekend(appointmentDate)
-                        ? 'fin de semana (sábado o domingo)'
-                        : 'un día festivo';
-                    return JSON.stringify({
-                        success: false,
-                        error: 'Día no hábil',
-                        instructions_for_ai: `La fecha solicitada (${date}) cae en ${dayName}. Las citas solo se agendan de lunes a viernes y no se programan en días festivos. Dile esto al cliente de forma muy amable y propónle directamente el siguiente día hábil disponible: ${nextBusinessStr}. Si el cliente quiere otro día, que elija un día entre lunes y viernes.`
-                    });
+                const created = await createAppointment({
+                    storeId,
+                    sessionPhone: senderPhone,
+                    clientName: client_name.trim(),
+                    phone: normalizedPhone,
+                    date: date.trim(),
+                    time,
+                    city: effectiveCity,
+                    address: effectiveAddress,
+                    appointmentType: appointment_type,
+                    reference: effectiveReference,
+                    source: 'bot',
+                });
+
+                if (!created.ok) {
+                    return JSON.stringify(created.reason === 'taken'
+                        ? { success: false, error: 'Horario ocupado', instructions_for_ai: `El horario de las ${time} del ${date} ya está reservado. Dile al cliente que ese espacio no está disponible e invítalo a elegir otra hora en punto (${APPOINTMENT_HOURS}) u otro día.` }
+                        : { success: false, instructions_for_ai: 'Hubo un problema técnico al registrar la cita. Dile al cliente que un asesor de Mr. 18Kilates lo contactará pronto para confirmarla.' });
                 }
 
-                if (!isValidAppointmentTime(time)) {
-                    return JSON.stringify({
-                        success: false,
-                        instructions_for_ai: 'La hora solicitada no es válida. Las citas se programan de lunes a viernes, en horas exactas entre 8:00 AM y 12:00 PM o entre 2:00 PM y 6:00 PM. Dile al cliente que elija una hora en punto dentro de esas franjas.'
-                    });
-                }
-                if (!adminCalendarEmail) {
-                    logger.warn(`schedule_appointment: sin adminCalendarEmail para storeId ${storeId}`);
-                    return JSON.stringify({
-                        success: false,
-                        instructions_for_ai: 'No hay calendario configurado. Dile al cliente que un asesor de Mr. 18Kilates lo contactará pronto para confirmar la venta.'
-                    });
-                }
+                if (sessionId) await setSessionAppointmentFlag(sessionId, true);
+                await createNotification({
+                    kind: isCall ? 'llamada_agendada' : 'cita_nueva',
+                    storeId,
+                    sessionId,
+                    phone: normalizedPhone,
+                    clientName: client_name.trim(),
+                    detail: `${date.trim()} ${time} · ${effectiveReference}`,
+                    appointmentId: created.id,
+                });
 
-                // ── Flujo con Google Calendar API ──
-                try {
-                    const calendar = calendarClient();
-
-                    const typeLabels: Record<string, string> = {
-                        asesoria_presencial: 'Asesoría presencial',
-                        producto_bajo_pedido: 'Producto bajo pedido',
-                    };
-
-                    const startTime = appointmentInstant(date, time);
-                    const endTime = new Date(startTime.getTime() + APPOINTMENT_DURATION_MINUTES * 60 * 1000);
-
-                    // ── VERIFICACIÓN DE DISPONIBILIDAD (Cruces de Horarios) ──
-                    const existingEvents = await calendar.events.list({
-                        calendarId: adminCalendarEmail,
-                        timeMin: startTime.toISOString(),
-                        timeMax: endTime.toISOString(),
-                        singleEvents: true,
-                        maxResults: 1
-                    });
-
-                    if (existingEvents.data.items && existingEvents.data.items.length > 0) {
-                        logger.warn(`Conflicto de horario detectado para la fecha ${date} a las ${time}`);
-                        return JSON.stringify({
-                            success: false,
-                            error: 'Horario ocupado',
-                            instructions_for_ai: `El horario de las ${time} del día ${date} ya está reservado. Dile de forma muy amable al cliente que ese espacio no está disponible e invítalo a proponer otra hora en punto (${APPOINTMENT_HOURS}) u otra fecha.`
-                        });
-                    }
-
-                    // ── Crear evento si el horario está libre ──
-                    const createdEvent = await calendar.events.insert({
-                        calendarId: adminCalendarEmail,
-                        requestBody: {
-                            summary: `${typeLabels[appointment_type]} (${effectiveCity}) — ${client_name}`,
-                            description: [
-                                `Cliente: ${client_name}`,
-                                isCall ? `Llamar al: ${normalizedPhone}` : `Atención presencial: ${effectiveCity}`,
-                                `WhatsApp: ${normalizedPhone}`,
-                                `Joya/interés: ${effectiveReference}`,
-                                isCall ? '' : `Dirección: ${effectiveAddress}`,
-                                `Tipo: ${typeLabels[appointment_type]}`,
-                                `Agendado automáticamente vía bot de WhatsApp — Mr. 18Kilates`,
-                            ].filter(Boolean).join('\n'),
-                            start: { dateTime: startTime.toISOString(), timeZone: 'America/Bogota' },
-                            end: { dateTime: endTime.toISOString(), timeZone: 'America/Bogota' },
-                        },
-                    });
-
-                    const saved = await saveAppointment(storeId, senderPhone, {
-                        clientName: client_name,
-                        city: effectiveCity,
-                        date,
-                        time,
-                        appointmentType: appointment_type,
-                        propertyReference: effectiveReference,
-                        address: effectiveAddress,
-                        phone: normalizedPhone,
-                        calendarEventId: createdEvent.data.id || undefined,
-                        status: 'scheduled',
-                        createdAt: new Date()
-                    });
-
-                    if (!saved) {
-                        if (createdEvent.data.id) {
-                            await calendar.events.delete({ calendarId: adminCalendarEmail, eventId: createdEvent.data.id }).catch(() => undefined);
-                        }
-                        return JSON.stringify({
-                            success: false,
-                            instructions_for_ai: 'La cita no pudo guardarse correctamente. Dile al cliente que hubo un problema técnico y que un asesor lo contactará para confirmarla.'
-                        });
-                    }
-
-                    // ── Guardar flag de cita y notificar solo después de persistir ──
-                    if (sessionId) await setSessionAppointmentFlag(sessionId, true);
-                    sendAppointmentNotification({
-                        adminEmail: adminCalendarEmail,
-                        clientName: client_name,
-                        city: effectiveCity,
-                        date,
-                        time,
-                        appointmentType: appointment_type,
-                        phone: normalizedPhone,
-                        propertyReference: effectiveReference,
-                        address: effectiveAddress,
-                    });
-
-                    const contactInfo = pqrEmail
-                        ? `Si necesitas cambiar o cancelar, escríbenos al correo ${pqrEmail} o espera a que un asesor te contacte.`
-                        : 'Si necesitas cambiar o cancelar, espera a que un asesor de Mr. 18Kilates te contacte.';
-
-                    return JSON.stringify({
-                        success: true,
-                        confirmed_date: date,
-                        confirmed_time: time,
-                        city: effectiveCity,
-                        contact_info: contactInfo,
-                        instructions_for_ai: isCall
-                            ? `La llamada quedó agendada. Confirma al cliente en una frase corta que un asesor lo llamará el ${date} a las ${time} al ${normalizedPhone}. ${contactInfo}`
-                            : `La cita presencial quedó registrada en ${effectiveCity}, ${effectiveAddress}. Confirma al cliente en una frase corta la fecha ${date}, la hora ${time} y la dirección, y que un asesor lo llamará antes para confirmar. ${contactInfo}`
-                    });
-
-                } catch (calErr: any) {
-                    logger.error(`Error creando evento en Google Calendar:`, calErr.message);
-                    if (calErr.response?.data) {
-                        logger.error(`Detalles del error de Calendar API:`, JSON.stringify(calErr.response.data));
-                    }
-                    return JSON.stringify({
-                        success: false,
-                        instructions_for_ai: 'Hubo un error técnico al registrar la cita. Dile al cliente que un asesor de Mr. 18Kilates lo contactará pronto para confirmar manualmente.'
-                    });
-                }
+                const contactInfo = 'Si necesitas cambiarla, escríbeme por aquí.';
+                return JSON.stringify({
+                    success: true,
+                    confirmed_date: date.trim(),
+                    confirmed_time: time,
+                    city: effectiveCity,
+                    instructions_for_ai: isCall
+                        ? `La llamada quedó agendada. Confirma al cliente en una frase corta que un asesor lo llamará el ${date} a las ${time} al ${normalizedPhone}. ${contactInfo}`
+                        : `La cita presencial quedó registrada en ${effectiveCity}, ${effectiveAddress}. Confirma al cliente en una frase corta la fecha ${date}, la hora ${time} y la dirección. ${contactInfo}`
+                });
             }
 
             case 'reschedule_appointment': {
@@ -642,75 +533,58 @@ export async function executeTool(
                 if (!pending) {
                     return JSON.stringify({ success: false, instructions_for_ai: 'No encontré una cita futura asociada a este número de WhatsApp. Si desea agendar, inicia el flujo de atención presencial.' });
                 }
-                if (!pending.calendarEventId) {
-                    return JSON.stringify({ success: false, instructions_for_ai: 'La cita existente no tiene identificador de calendario. Un asesor debe ayudar a reprogramarla manualmente.' });
+
+                const { date, time: rawTime } = args as { date?: string; time?: string };
+                const time = normalizeTime(rawTime || '');
+                const problem = date ? checkSlot(date.trim(), time, { earliest: 'tomorrow' }) : { message: 'Falta la fecha.' };
+                if (problem) {
+                    return JSON.stringify({ success: false, instructions_for_ai: `${problem.message} Propón otra fecha de lunes a viernes, ${APPOINTMENT_HOURS}.` });
                 }
 
-                const { date, time } = args as { date?: string; time?: string };
-                if (!date || !time || !isValidAppointmentTime(time)) {
-                    return JSON.stringify({ success: false, instructions_for_ai: 'La nueva fecha u hora no es válida. Usa un día hábil y una hora exacta entre 8:00 AM–12:00 PM o 2:00 PM–6:00 PM.' });
+                const moved = await updateAppointment(pending.id, { date: date!.trim(), time });
+                if (!moved.ok) {
+                    return JSON.stringify(moved.reason === 'taken'
+                        ? { success: false, error: 'Horario ocupado', instructions_for_ai: 'Ese horario ya está ocupado. Pide otra hora o fecha.' }
+                        : { success: false, instructions_for_ai: 'No pude reprogramar la cita por un problema técnico. Un asesor te ayudará a confirmarla.' });
                 }
 
-                const newDate = parseAppointmentDate(date);
-                if (!newDate || !isAfterTodayInBogota(date) || isWeekend(newDate) || isHoliday(newDate)) {
-                    return JSON.stringify({ success: false, instructions_for_ai: 'La nueva fecha debe ser un día hábil posterior a hoy. Propón otra fecha de lunes a viernes.' });
-                }
+                const pendingIsCall = pending.city === CALL_APPOINTMENT_CITY;
+                await createNotification({
+                    kind: 'cita_reprogramada',
+                    storeId,
+                    sessionId,
+                    phone: pending.phone,
+                    clientName: pending.clientName,
+                    detail: `${pending.date} ${pending.time} → ${date!.trim()} ${time}${pendingIsCall ? ' (llamada)' : ''}`,
+                    appointmentId: pending.id,
+                });
 
-                if (!adminCalendarEmail) {
-                    return JSON.stringify({ success: false, instructions_for_ai: 'No hay calendario configurado. Un asesor debe confirmar la reprogramación manualmente.' });
-                }
+                return JSON.stringify({ success: true, confirmed_date: date, confirmed_time: time, instructions_for_ai: pendingIsCall
+                    ? `La llamada fue reprogramada: un asesor llamará al cliente el ${date} a las ${time}.`
+                    : `La cita fue reprogramada para el ${date} a las ${time} en ${APPOINTMENT_ADDRESS}, ${APPOINTMENT_CITY}.` });
+            }
 
-                try {
-                    const calendar = calendarClient();
-                    const startTime = appointmentInstant(date, time);
-                    const endTime = new Date(startTime.getTime() + APPOINTMENT_DURATION_MINUTES * 60 * 1000);
-                    const existingEvents = await calendar.events.list({
-                        calendarId: adminCalendarEmail,
-                        timeMin: startTime.toISOString(),
-                        timeMax: endTime.toISOString(),
-                        singleEvents: true,
-                        maxResults: 2,
-                    });
-                    const unrelatedEvent = (existingEvents.data.items || []).some(event => event.id !== pending.calendarEventId);
-                    if (unrelatedEvent) {
-                        return JSON.stringify({ success: false, error: 'Horario ocupado', instructions_for_ai: 'Ese horario ya está ocupado. Pide otra hora o fecha.' });
-                    }
-
-                    await calendar.events.patch({
-                        calendarId: adminCalendarEmail,
-                        eventId: pending.calendarEventId,
-                        requestBody: {
-                            start: { dateTime: startTime.toISOString(), timeZone: 'America/Bogota' },
-                            end: { dateTime: endTime.toISOString(), timeZone: 'America/Bogota' },
-                        },
-                    });
-
-                    const updated = await updateAppointmentSchedule(storeId, senderPhone, pending.id, date, time, pending.calendarEventId);
-                    if (!updated) {
-                        return JSON.stringify({ success: false, instructions_for_ai: 'El calendario se actualizó, pero la base de datos no confirmó el cambio. Un asesor debe revisar la cita.' });
-                    }
-
-                    const pendingIsCall = pending.city === CALL_APPOINTMENT_CITY;
-                    const pendingPlace = appointmentPlace(pendingIsCall ? 'llamada' : 'presencial');
-                    sendAppointmentNotification({
-                        adminEmail: adminCalendarEmail,
-                        clientName: pending.clientName,
-                        city: pendingPlace.city,
-                        date,
-                        time,
-                        appointmentType: pending.appointmentType,
-                        phone: pending.phone,
-                        propertyReference: pending.propertyReference,
-                        address: pendingPlace.address,
-                    });
-
-                    return JSON.stringify({ success: true, confirmed_date: date, confirmed_time: time, instructions_for_ai: pendingIsCall
-                        ? `La llamada fue reprogramada: un asesor llamará al cliente el ${date} a las ${time}.`
-                        : `La cita fue reprogramada para el ${date} a las ${time} en ${APPOINTMENT_ADDRESS}, ${APPOINTMENT_CITY}.` });
-                } catch (error: any) {
-                    logger.error(`Error reprogramando cita: ${error.message}`);
-                    return JSON.stringify({ success: false, instructions_for_ai: 'No pude reprogramar la cita por un problema técnico. Un asesor te ayudará a confirmarla.' });
-                }
+            // ── «Llámenme» o «quiero hablar con un asesor», sin hora fija ──
+            case 'request_human_contact': {
+                const { via, motivo, nombre } = args as { via?: 'llamada' | 'chat'; motivo?: string; nombre?: string };
+                const callable = normalizeColombianMobile(senderPhone);
+                const wantsCall = via !== 'chat';
+                await createNotification({
+                    kind: wantsCall ? 'llamar_ya' : 'pide_asesor',
+                    storeId,
+                    sessionId,
+                    phone: callable || senderPhone,
+                    clientName: (nombre || '').trim(),
+                    detail: (motivo || '').trim() || (wantsCall ? 'Pide que lo llamen' : 'Pide hablar con un asesor'),
+                });
+                return JSON.stringify({
+                    success: true,
+                    instructions_for_ai: wantsCall
+                        ? (callable
+                            ? `Ya avisé al equipo. Dile al cliente en una frase corta que un asesor lo llamará lo antes posible al ${callable}, ${APPOINTMENT_HOURS}.`
+                            : 'Ya avisé al equipo. Pídele al cliente un número de celular de 10 dígitos para que el asesor lo llame.')
+                        : 'Ya avisé al equipo. Dile al cliente en una frase corta que un asesor le escribirá por aquí lo antes posible.',
+                });
             }
 
             // ── Estado de una reparación (taller de la tienda) ─────────

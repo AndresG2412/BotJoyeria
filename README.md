@@ -8,7 +8,6 @@ Bot conversacional con IA para atencion al cliente via WhatsApp Cloud API oficia
 - **Base de la tienda** (Supabase) con el esquema `bot` creado (`supabase/002_bot_schema.sql`)
 - **API key de IA**: Anthropic (Claude Haiku) o un proveedor compatible con OpenAI, como DeepSeek (ver `AI_*`)
 - **Cuenta de Meta Developer** (para WhatsApp Cloud API)
-- **Cuenta de Resend** (para notificaciones por email, opcional)
 - **Google Cloud** con Calendar API habilitada (opcional, para agendar citas)
 - **Ngrok** (opcional, para desarrollo local con webhooks)
 
@@ -58,7 +57,6 @@ Copia `.env.example` a `.env` y completa **todas** las variables marcadas como R
 | `META_APP_SECRET` | App Secret para validar la firma del webhook |
 | `META_VERIFY_TOKEN` | Token elegido para verificar el webhook en Meta |
 | `META_API_VERSION` | Version de Graph API usada por el proyecto |
-| `RESEND_API_KEY` | (Opcional) API Key de Resend para emails |
 | `STORE_NAME` | Nombre de la tienda (ej: "Mr. 18Kilates") |
 | `DASHBOARD_USER` / `DASHBOARD_PASSWORD` | Credenciales del panel de control |
 
@@ -109,13 +107,11 @@ hora; la cita se registra siempre en Pitalito, en Calle 4 #1-31, incluyendo el p
 Las imagenes del catalogo se guardan en WebP; como WhatsApp solo acepta JPEG/PNG en mensajes de
 imagen, el bot las convierte a JPEG al enviarlas.
 
-### Google Calendar (opcional)
+### Citas y avisos
 
-1. Ve a [Google Cloud Console](https://console.cloud.google.com)
-2. Habilita **Google Calendar API**
-3. Crea una **Cuenta de Servicio** y descarga el JSON
-4. Renombra el archivo a `google-service-account.json` y colocalo en la raiz del proyecto
-5. Comparte tu calendario con el email de la cuenta de servicio (con permisos de escritura)
+Las citas se guardan en `bot.appointments` (calendario propio, sin Google Calendar) y la tienda las
+administra en **Mostrador → Citas**. Los avisos (cita nueva, llamada, «llámenme», cliente que pide
+un asesor) llegan a la campana del admin. SQL: `supabase/005_calendario_y_avisos.sql`.
 
 ### Telegram
 
@@ -146,7 +142,6 @@ src/
     dashboard.ts      # API del panel de control
   utils/
     logger.ts         # Logger
-    mailer.ts         # Envio de emails (Resend)
 public/
     dashboard.html    # Panel de control
     login.html        # Login del panel
@@ -181,5 +176,3 @@ solucion de problemas).
 - Drizzle ORM
 - WhatsApp Cloud API oficial
 - Telegram Bot API
-- Google Calendar API
-- Resend (emails)

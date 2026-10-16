@@ -5,6 +5,13 @@ import { logger } from '../utils/logger';
 import { getSession, getSessionDetail, getSessionSummaries, getMemory, saveMemory, clearHumanTakeover } from '../data/database';
 import { fetchCustomerPhotoForAdmin, pauseChat, processUnansweredMessage, resumeChat, sendWhatsAppMessage } from '../channels/whatsapp-cloud';
 import { PHOTO_MEDIA_ID_FIELD } from '../bot/agent';
+import {
+    APPOINTMENT_STATUSES, Appointment, AppointmentChanges, countUnreadNotifications, createAppointment, getAppointment,
+    listAppointments, listNotifications, markAllNotificationsRead, markNotificationRead, updateAppointment,
+} from '../data/agenda';
+import { AppointmentMode, CALL_APPOINTMENT_CITY, appointmentPlace } from '../bot/policies';
+import { checkSlot, normalizeTime } from '../bot/scheduling';
+import { normalizeColombianMobile } from '../bot/tools';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  API servidor a servidor para el admin de la tienda (Mostrador → WhatsApp)
@@ -183,4 +190,135 @@ adminApiRouter.post('/sessions/:sessionId/resume', async (req: Request, res: Res
         );
     }
     res.json({ success: true, botResumed: true });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  CALENDARIO DE CITAS (Mostrador → Citas). Las reglas de horario son las mismas del bot
+//  (src/bot/scheduling.ts); desde el panel se puede anotar también para hoy.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+const MAX_RANGE_DAYS = 62;
+
+function authorOf(req: Request): string {
+    return typeof req.body?.author === 'string' && req.body.author.trim() ? req.body.author.trim().slice(0, 80) : 'panel';
+}
+
+/** La cita como la ve el panel: la modalidad sale de la ciudad guardada (las llamadas usan CALL_APPOINTMENT_CITY). */
+export function toPanelAppointment(appointment: Appointment) {
+    const { sessionPhone: _session, city, address, ...rest } = appointment;
+    const isCall = city === CALL_APPOINTMENT_CITY;
+    return { ...rest, mode: isCall ? 'llamada' : 'presencial', place: isCall ? '' : `${address}, ${city}` };
+}
+
+function slotError(res: Response, reason: 'taken' | 'not_found' | 'error') {
+    if (reason === 'taken') return res.status(409).json({ error: 'Ese horario ya tiene una cita.' });
+    if (reason === 'not_found') return res.status(404).json({ error: 'Cita no encontrada.' });
+    return res.status(500).json({ error: 'No se pudo guardar la cita. Intenta de nuevo.' });
+}
+
+/** GET /admin-api/appointments?from=YYYY-MM-DD&to=YYYY-MM-DD */
+adminApiRouter.get('/appointments', async (req: Request, res: Response) => {
+    const from = String(req.query.from || '');
+    const to = String(req.query.to || '');
+    if (!ISO_DAY.test(from) || !ISO_DAY.test(to) || from > to) {
+        return res.status(400).json({ error: 'Rango de fechas inválido.' });
+    }
+    if ((Date.parse(to) - Date.parse(from)) / 86_400_000 > MAX_RANGE_DAYS) {
+        return res.status(400).json({ error: `Máximo ${MAX_RANGE_DAYS} días por consulta.` });
+    }
+    res.json((await listAppointments(from, to)).map(toPanelAppointment));
+});
+
+/** POST /admin-api/appointments — una cita anotada desde el mostrador (alguien que llamó o vino). */
+adminApiRouter.post('/appointments', async (req: Request, res: Response) => {
+    const b = req.body || {};
+    const clientName = typeof b.clientName === 'string' ? b.clientName.trim().slice(0, 120) : '';
+    const phone = normalizeColombianMobile(String(b.phone || ''));
+    const date = String(b.date || '').trim();
+    const time = normalizeTime(String(b.time || ''));
+    const mode: AppointmentMode = b.mode === 'llamada' ? 'llamada' : 'presencial';
+    if (!clientName) return res.status(400).json({ error: 'Escribe el nombre del cliente.' });
+    if (!phone) return res.status(400).json({ error: 'El celular debe tener 10 dígitos.' });
+    const problem = checkSlot(date, time, { earliest: 'today' });
+    if (problem) return res.status(400).json({ error: problem.message });
+
+    const { city, address } = appointmentPlace(mode);
+    const created = await createAppointment({
+        storeId: typeof b.storeId === 'string' && b.storeId ? b.storeId : 'default',
+        // El mismo identificador que tendría su chat: si después escribe, el bot ve la cita.
+        sessionPhone: `57${phone}`,
+        clientName,
+        phone,
+        date,
+        time,
+        city,
+        address,
+        appointmentType: b.appointmentType === 'producto_bajo_pedido' ? 'producto_bajo_pedido' : 'asesoria_presencial',
+        reference: typeof b.reference === 'string' && b.reference.trim() ? b.reference.trim().slice(0, 200) : 'Asesoría general',
+        notes: typeof b.notes === 'string' ? b.notes.trim().slice(0, 1000) : '',
+        source: 'panel',
+    });
+    if (!created.ok) return slotError(res, created.reason);
+    logger.info(`Admin de la tienda: ${authorOf(req)} anotó una cita (${created.id})`);
+    const appointment = await getAppointment(created.id);
+    res.status(201).json(appointment ? toPanelAppointment(appointment) : { id: created.id });
+});
+
+/** PATCH /admin-api/appointments/:id — estado, horario o notas. */
+adminApiRouter.patch('/appointments/:id', async (req: Request, res: Response) => {
+    const id = String(req.params['id']);
+    const current = await getAppointment(id);
+    if (!current) return slotError(res, 'not_found');
+
+    const b = req.body || {};
+    const changes: AppointmentChanges = {};
+    if (b.status !== undefined) {
+        if (!APPOINTMENT_STATUSES.includes(b.status)) return res.status(400).json({ error: 'Estado inválido.' });
+        changes.status = b.status;
+    }
+    if (b.notes !== undefined) changes.notes = String(b.notes).trim().slice(0, 1000);
+    if (b.date !== undefined || b.time !== undefined) {
+        const date = String(b.date ?? current.date).trim();
+        const time = normalizeTime(String(b.time ?? current.time));
+        const problem = checkSlot(date, time, { earliest: 'today' });
+        if (problem) return res.status(400).json({ error: problem.message });
+        changes.date = date;
+        changes.time = time;
+        // Reprogramar una cita cancelada o atendida la vuelve a dejar vigente.
+        changes.status = changes.status ?? 'scheduled';
+    }
+    if (!Object.keys(changes).length) return res.status(400).json({ error: 'No hay cambios.' });
+
+    const result = await updateAppointment(id, changes);
+    if (!result.ok) return slotError(res, result.reason);
+    logger.info(`Admin de la tienda: ${authorOf(req)} cambió la cita ${id} (${Object.keys(changes).join(', ')})`);
+    const updated = await getAppointment(id);
+    res.json(updated ? toPanelAppointment(updated) : { id });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  AVISOS (la campana del admin de la tienda)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** GET /admin-api/notifications/count — barato: lo consulta la campana cada pocos segundos. */
+adminApiRouter.get('/notifications/count', async (_req: Request, res: Response) => {
+    res.json(await countUnreadNotifications());
+});
+
+/** GET /admin-api/notifications?limit=30 — primero los no leídos. */
+adminApiRouter.get('/notifications', async (req: Request, res: Response) => {
+    res.json(await listNotifications(Number(req.query.limit) || 30));
+});
+
+/** POST /admin-api/notifications/read-all */
+adminApiRouter.post('/notifications/read-all', async (req: Request, res: Response) => {
+    res.json({ success: true, marked: await markAllNotificationsRead(authorOf(req)) });
+});
+
+/** POST /admin-api/notifications/:id/read */
+adminApiRouter.post('/notifications/:id/read', async (req: Request, res: Response) => {
+    const id = Number(req.params['id']);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Aviso inválido.' });
+    res.json({ success: await markNotificationRead(id, authorOf(req)) });
 });
