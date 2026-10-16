@@ -47,3 +47,12 @@ test('la verificación del webhook solo devuelve un challenge numérico, como te
         server.close();
     }
 });
+
+test('el panel recibe las tiendas sin sus tokens, solo si están configurados', async () => {
+    const { publicStore } = await import('../src/routes/dashboard');
+    const visible = publicStore({ id: 'default', name: 'Joyería', whatsappAccessToken: 'EAAsecreto', telegramToken: '', openaiApiKey: null });
+    assert.equal(visible.whatsappAccessToken, undefined);
+    assert.equal(visible.whatsappAccessTokenConfigured, true);
+    assert.equal(visible.telegramTokenConfigured, false);
+    assert.ok(!JSON.stringify(visible).includes('EAAsecreto'));
+});

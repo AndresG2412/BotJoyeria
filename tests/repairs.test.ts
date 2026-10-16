@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     buildRepairReport, checkRepairStatus, isRepairLookupLocked, MAX_FAILED_REPAIR_LOOKUPS,
-    normalizeDocument, normalizeOrderNumber, repairStatusLabel, resetRepairLookupAttempts, senderMobile,
+    normalizeDocument, normalizeOrderNumber, repairAttemptKeys, repairStatusLabel, resetRepairLookupAttempts, senderMobile,
 } from '../src/bot/repairs';
 import { botTools } from '../src/bot/tools';
 import type { RepairOrderRow } from '../src/data/taller';
@@ -77,7 +77,7 @@ test('sin coincidencia y sin cédula, pide la cédula sin confirmar si la orden 
     const result = JSON.parse(await checkRepairStatus({ numero_orden: 'T-0012' }, { sessionKey: 's2', senderPhone: '573000000000' }, lookup));
     assert.equal(result.verificado, false);
     assert.match(result.instrucciones, /cédula/);
-    assert.equal(isRepairLookupLocked('s2'), false);
+    assert.equal(await isRepairLookupLocked(repairAttemptKeys('s2')), false);
 });
 
 test('bloquea tras varios intentos fallidos con cédula', async () => {
@@ -86,10 +86,29 @@ test('bloquea tras varios intentos fallidos con cédula', async () => {
     for (let i = 0; i < MAX_FAILED_REPAIR_LOOKUPS; i++) {
         await checkRepairStatus({ numero_orden: 'T-0012', cedula: `1083456${i}00` }, { sessionKey: 's3', senderPhone: '573000000000' }, lookup);
     }
-    assert.equal(isRepairLookupLocked('s3'), true);
+    assert.equal(await isRepairLookupLocked(repairAttemptKeys('s3')), true);
     const result = JSON.parse(await checkRepairStatus({ numero_orden: 'T-0012', cedula: '1083456789' }, { sessionKey: 's3', senderPhone: '573000000000' }, lookup));
     assert.equal(result.verificado, false);
     assert.equal(calls.length, MAX_FAILED_REPAIR_LOOKUPS, 'bloqueado ya no consulta la base');
+});
+
+test('la misma cédula se bloquea aunque prueben desde otros chats', async () => {
+    resetRepairLookupAttempts();
+    const { lookup, calls } = fakeLookup([]);
+    for (let i = 0; i < MAX_FAILED_REPAIR_LOOKUPS; i++) {
+        await checkRepairStatus({ numero_orden: `T-00${i}`, cedula: '1083456789' }, { sessionKey: `otro${i}`, senderPhone: `57300000000${i}` }, lookup);
+    }
+    const result = JSON.parse(await checkRepairStatus({ numero_orden: 'T-0099', cedula: '1083456789' }, { sessionKey: 'nuevo', senderPhone: '573009999999' }, lookup));
+    assert.equal(result.verificado, false);
+    assert.match(result.instrucciones, /Por seguridad/);
+    assert.equal(calls.length, MAX_FAILED_REPAIR_LOOKUPS, 'bloqueado ya no consulta la base');
+});
+
+test('la cédula nunca se guarda en claro en las claves de conteo', () => {
+    const keys = repairAttemptKeys('default_573000000000', '1083456789');
+    assert.equal(keys[0], 'chat:default_573000000000');
+    assert.match(keys[1], /^doc:[0-9a-f]{64}$/);
+    assert.ok(!keys.join().includes('1083456789'));
 });
 
 test('solo cédula desde un identificador que no es celular: pide el número de orden y no consulta', async () => {

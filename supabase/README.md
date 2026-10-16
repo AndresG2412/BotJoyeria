@@ -35,6 +35,9 @@ tienda (`public.*`): el catálogo lo toma de la API pública de la tienda.
   Correr ANTES de desplegar el código que la usa (sin ella el bot responde que no puede consultar).
 - `005_calendario_y_avisos.sql`: calendario propio (estado «no vino», notas, origen, un solo turno por
   horario) y la tabla `bot.notifications`. Reemplaza a Google Calendar. Correr ANTES de desplegar.
+- `006_intentos_reparaciones.sql`: tabla `bot.repair_lookup_failures` con los intentos fallidos de
+  consulta de reparaciones (por chat y por cédula con hash), para que el límite sobreviva a los
+  reinicios. Si falta, el bot sigue contando en memoria.
 
 ## Comprobar permisos
 
