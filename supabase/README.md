@@ -38,6 +38,8 @@ tienda (`public.*`): el catálogo lo toma de la API pública de la tienda.
 - `006_intentos_reparaciones.sql`: tabla `bot.repair_lookup_failures` con los intentos fallidos de
   consulta de reparaciones (por chat y por cédula con hash), para que el límite sobreviva a los
   reinicios. Si falta, el bot sigue contando en memoria.
+- `007_nombre_perfil.sql`: columna `profile_name` en `bot.sessions`, el nombre de perfil de WhatsApp
+  que el panel muestra en la lista de chats. Correr ANTES de desplegar (saveMemory la escribe).
 
 ## Comprobar permisos
 

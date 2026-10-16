@@ -6,7 +6,7 @@ import { logger, maskPhone } from '../utils/logger';
 import { config } from '../config/env';
 import { CustomerPhoto, handleUserMessage, photoPlaceholder } from '../bot/agent';
 import { db } from '../data/connection';
-import { getSession, setSessionPause, checkRateLimit, incrementMessageCount, getMemory, saveMemory, getStalePausedSessions, isHumanAttending, markHumanReply } from '../data/database';
+import { getSession, setSessionPause, checkRateLimit, incrementMessageCount, getMemory, saveMemory, getStalePausedSessions, isHumanAttending, markHumanReply, rememberProfileName } from '../data/database';
 import { resolveSystemPrompt } from '../bot/prompts';
 import { PendingImage } from '../bot/tools';
 import { isUnsupportedInboundType, UNSUPPORTED_FILE_RESPONSE } from '../bot/policies';
@@ -47,6 +47,8 @@ type InboundMessage = {
 type InboundEnvelope = {
     phoneNumberId: string;
     message: InboundMessage;
+    /** El nombre de perfil de WhatsApp de quien escribe (`contacts[].profile.name`), si Meta lo manda. */
+    profileName?: string;
 };
 
 /** Mensaje que alguien de la joyería envió desde la app WhatsApp Business (coexistencia). */
@@ -401,7 +403,15 @@ export function parseWebhookPayload(payload: any): ParsedWebhook {
             parsed.webhooks.push({ phoneNumberId, displayPhoneNumber: value?.metadata?.display_phone_number });
 
             for (const status of (value?.statuses || []) as MessageStatus[]) parsed.statuses.push({ phoneNumberId, status });
-            for (const message of value?.messages || []) parsed.messages.push({ phoneNumberId, message });
+            // El nombre que el cliente puso en su WhatsApp: llega en `contacts`, emparejado por wa_id
+            // (o por user_id cuando no comparte el número). Con un solo contacto, es el de todos.
+            const contacts = (value?.contacts || []) as Array<{ wa_id?: string; user_id?: string; profile?: { name?: string } }>;
+            const nameFor = (message: InboundMessage) => {
+                const match = contacts.find(c => (c.wa_id && c.wa_id === message.from) || (c.user_id && c.user_id === message.from_user_id));
+                const name = (match ?? (contacts.length === 1 ? contacts[0] : undefined))?.profile?.name;
+                return typeof name === 'string' ? name : undefined;
+            };
+            for (const message of value?.messages || []) parsed.messages.push({ phoneNumberId, message, profileName: nameFor(message) });
             for (const echo of value?.message_echoes || []) parsed.echoes.push({ phoneNumberId, echo });
         }
     }
@@ -682,6 +692,8 @@ async function processInboundMessage(envelope: InboundEnvelope): Promise<void> {
 
     const conversation = buildConversation(store, phoneNumberId, senderPhone);
     const sessionId = sessionIdFor(conversation);
+    // Se guarda con el chat en el próximo saveMemory: el panel lo muestra en vez del identificador.
+    rememberProfileName(sessionId, envelope.profileName);
     const currentSession = await getSession(sessionId);
 
     if (!userText && !photoId) {
