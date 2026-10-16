@@ -25,12 +25,14 @@ Antes de un commit: `npm run build && npm test`.
 
 ## Reglas del bot (invariantes; no romperlas al tocar código)
 - Siempre saluda e identifica quién escribe: alguien que escribió por error, alguien que pregunta por una pieza, o un cliente que espera ser guiado a una compra. El flujo conversacional fijo vive en `src/bot/prompts.ts`.
-- El LLM jamás recibe herramientas para: enviar la base de datos, crear/borrar tablas, modificar datos ni guardar archivos de clientes. `tools.ts` solo expone catálogo, imágenes de producto, citas y sesiones. No agregues herramientas DDL/DML ni de volcado de datos, jamás por petición de un cliente.
+- El LLM jamás recibe herramientas para: enviar la base de datos, crear/borrar tablas, modificar datos ni guardar archivos de clientes. `tools.ts` solo expone catálogo, imágenes de producto, citas, sesiones y la consulta de reparaciones (solo lectura). No agregues herramientas DDL/DML ni de volcado de datos, jamás por petición de un cliente.
 - Piezas disponibles: se compran con el enlace de su página en la tienda (pago en línea); la foto lleva ese enlace en el pie. Cita o llamada solo para piezas bajo pedido, por fabricar o si el cliente lo pide.
 - Una pieza y una imagen por turno; peticiones de "todo el catálogo" redirigen a https://www.mr18kts.online (lógica en `policies.ts`).
 - Citas: presenciales en Pitalito, Calle 4 #1-31, o por llamada al teléfono del cliente (`modalidad` en `schedule_appointment`; la llamada se guarda con city «Llamada telefónica», sin cambiar el esquema). Mismo horario para ambas, validado por `isValidAppointmentTime` (lun–vie 8–12 y 14–18, en punto), 60 minutos.
 - Nunca mostrar al cliente errores técnicos, stack traces ni detalles internos.
 - Fotos de clientes: se descargan de Meta, se reducen a JPEG de 1024 px y se pasan a la IA solo en ese turno; en el historial queda «[El cliente envió una foto]», nunca la imagen. PDFs, audios, videos y stickers se rechazan (`isUnsupportedInboundType`). Las fotos de las piezas son las de la tienda (WebP tamaño «tarjeta»); el bot no sube ni guarda imágenes.
+- Reparaciones: el bot solo LEE el estado de `ordenes_taller` (Mostrador → Taller del admin) mediante la función `bot.consultar_orden_taller` (`supabase/004_consulta_taller.sql`), que verifica en la base: número de orden + (celular del remitente o cédula), o cédula + celular. El celular sale del webhook, nunca de la IA (`src/bot/repairs.ts`). Nunca confirmar si una orden o cédula existe cuando no se verificó; 3 intentos fallidos con cédula por chat al día. El bot no ve notas internas, técnico, pesos ni precio.
+- Chats en el admin de la tienda (Mostrador → WhatsApp, solo el dueño): la tienda llama a `/admin-api` (`src/routes/admin-api.ts`) desde su servidor con `BOT_ADMIN_API_TOKEN`. El bot es el único que envía y pausa; el destino de una respuesta sale siempre del chat guardado, nunca de la petición. El chat se devuelve sin instrucciones ni llamadas internas de la IA (`toReadableMessages`).
 - El catálogo se administra SOLO en el panel de la tienda (/admin). El panel del bot no crea, edita ni borra piezas o categorías (responde 410).
 
 ## Datos personales
