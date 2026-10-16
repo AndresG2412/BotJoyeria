@@ -159,6 +159,8 @@ export type Notification = {
     clientName: string;
     detail: string;
     appointmentId: string | null;
+    /** La fecha de la cita del aviso, para que el panel abra esa semana. */
+    appointmentDate: string | null;
     createdAt: string;
     readAt: string | null;
     readBy: string | null;
@@ -200,6 +202,7 @@ function toNotification(row: any): Notification {
         clientName: row.client_name || '',
         detail: row.detail || '',
         appointmentId: row.appointment_id,
+        appointmentDate: row.appointment_date ?? null,
         createdAt: new Date(row.created_at).toISOString(),
         readAt: row.read_at ? new Date(row.read_at).toISOString() : null,
         readBy: row.read_by,
@@ -218,7 +221,9 @@ export async function countUnreadNotifications(): Promise<{ unread: number; late
 export async function listNotifications(limit = 30): Promise<Notification[]> {
     if (!pool) return [];
     const { rows } = await pool.query(
-        `select * from bot.notifications order by (read_at is null) desc, created_at desc limit $1`,
+        `select n.*, a.date as appointment_date
+         from bot.notifications n left join bot.appointments a on a.id = n.appointment_id
+         order by (n.read_at is null) desc, n.created_at desc limit $1`,
         [Math.min(Math.max(limit, 1), 100)],
     );
     return rows.map(toNotification);
