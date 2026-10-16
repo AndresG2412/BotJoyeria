@@ -28,6 +28,10 @@ tienda (`public.*`): el catálogo lo toma de la API pública de la tienda.
 ## Cambios posteriores
 
 - `003_human_takeover.sql`: columna `human_until` (coexistencia). Correr ANTES de desplegar el código que la usa.
+- `004_consulta_taller.sql`: función `bot.consultar_orden_taller` para que el bot informe el estado de
+  las reparaciones (Mostrador → Taller). Es de solo lectura y verifica dentro de la base: el bot NO
+  recibe permisos sobre `public.ordenes_taller` ni `public.clientes`, solo puede ejecutar la función.
+  Correr ANTES de desplegar el código que la usa (sin ella el bot responde que no puede consultar).
 
 ## Comprobar permisos
 
