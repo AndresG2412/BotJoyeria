@@ -256,7 +256,7 @@ async function uploadMedia(credentials: WhatsAppCredentials, image: PendingImage
  * Descarga la foto que envió el cliente (dos pasos en Graph API: datos del archivo y luego
  * el archivo, ambos con el token) y la deja en JPEG de máximo 1024 px. Queda solo en memoria.
  */
-async function downloadCustomerPhoto(store: StoreRecord, mediaId: string): Promise<CustomerPhoto> {
+async function downloadCustomerPhoto(store: StoreRecord, mediaId: string, recordFailure = true): Promise<CustomerPhoto> {
     const credentials = getCredentials(store);
     assertCredentials(credentials);
     const headers = { Authorization: `Bearer ${credentials.accessToken}` };
@@ -281,9 +281,22 @@ async function downloadCustomerPhoto(store: StoreRecord, mediaId: string): Promi
     } catch (error: any) {
         recordGraphResponse(credentials.phoneNumberId, 'download_media', false, error?.response?.status ?? null);
         const message = error?.response ? describeGraphError(error) : (error?.message || 'error desconocido');
-        recordError(credentials.phoneNumberId, 'download_media', message);
-        throw new Error(message);
+        // Una foto vieja que WhatsApp ya borró, pedida desde el admin, no es una falla del canal.
+        if (recordFailure) recordError(credentials.phoneNumberId, 'download_media', message);
+        const failure: any = new Error(message);
+        failure.status = error?.response?.status ?? null;
+        throw failure;
     }
+}
+
+/**
+ * La foto de un cliente para el admin de la tienda: se descarga de WhatsApp en el momento y se
+ * entrega sin guardarla. Quién puede pedirla y de qué chat lo controla src/routes/admin-api.ts.
+ */
+export async function fetchCustomerPhotoForAdmin(storeId: string, mediaId: string): Promise<Buffer> {
+    const store = await getStoreById(storeId);
+    const photo = await downloadCustomerPhoto(store as StoreRecord, mediaId, false);
+    return Buffer.from(photo.data, 'base64');
 }
 
 async function sendImageMessage(store: StoreRecord | null, to: string, image: PendingImage): Promise<void> {
@@ -467,7 +480,7 @@ async function runBotResponse(conversation: Conversation, userText: string, phot
     let photo: CustomerPhoto | undefined;
     if (photoId) {
         try {
-            photo = await downloadCustomerPhoto(store, photoId);
+            photo = { ...await downloadCustomerPhoto(store, photoId), mediaId: photoId };
         } catch (error: any) {
             logger.error(`WhatsApp: no se pudo descargar la foto del cliente en ${sessionId}: ${error.message}`);
             await sendTextMessage(store, senderPhone, PHOTO_DOWNLOAD_FAILED_RESPONSE);
