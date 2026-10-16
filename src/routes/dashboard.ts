@@ -94,11 +94,28 @@ dashboardRouter.get('/api/stores', async (req: any, res: Response) => {
         const result = isSuperAdmin(req)
             ? await db.query.stores.findMany()
             : await db.query.stores.findMany({ where: eq(stores.id, req.user.storeId) });
-        res.json(result);
+        res.json(result.map(publicStore));
     } catch (e: any) {
         serverError(res, e);
     }
 });
+
+/** Campos secretos de una tienda: nunca viajan al navegador, solo si están configurados. */
+const STORE_SECRETS = ['openaiApiKey', 'telegramToken', 'whatsappAccessToken'] as const;
+
+export const publicStore = (store: any) => {
+    if (!store) return store;
+    const visible = { ...store };
+    for (const field of STORE_SECRETS) {
+        visible[`${field}Configured`] = Boolean(store[field]);
+        delete visible[field];
+    }
+    return visible;
+};
+
+/** Un secreto vacío o ausente en la petición NO borra el guardado (el navegador ya no lo conoce). */
+const secretUpdate = (field: typeof STORE_SECRETS[number], value: unknown) =>
+    typeof value === 'string' && value.trim() ? { [field]: value.trim() } : {};
 
 /** POST /api/stores — crear tienda */
 dashboardRouter.post('/api/stores', checkSuperAdmin, async (req: Request, res: Response) => {
@@ -118,7 +135,7 @@ dashboardRouter.post('/api/stores', checkSuperAdmin, async (req: Request, res: R
             isActive: true,
         }).returning();
 
-        res.status(201).json(store);
+        res.status(201).json(publicStore(store));
     } catch (e: any) {
         serverError(res, e);
     }
@@ -143,20 +160,20 @@ dashboardRouter.put('/api/stores/:id', async (req: any, res: Response) => {
         const [updated] = await db.update(stores)
             .set({
                 name, systemPrompt,
-                openaiApiKey:       openaiApiKey       || null,
                 pqrEmail:           pqrEmail           || null,
                 adminCalendarEmail: adminCalendarEmail || null,
-                telegramToken:      telegramToken      || null,
                 telegramBotActive:  !!telegramBotActive,
                 isActive,
                 ...(whatsappPhoneNumberId !== undefined && { whatsappPhoneNumberId: whatsappPhoneNumberId || null }),
-                ...(whatsappAccessToken   !== undefined && { whatsappAccessToken:   whatsappAccessToken   || null }),
+                ...secretUpdate('openaiApiKey', openaiApiKey),
+                ...secretUpdate('telegramToken', telegramToken),
+                ...secretUpdate('whatsappAccessToken', whatsappAccessToken),
             })
             .where(eq(stores.id, id))
             .returning();
 
         if (!updated) return res.status(404).json({ error: 'Tienda no encontrada' });
-        res.json(updated);
+        res.json(publicStore(updated));
     } catch (e: any) {
         serverError(res, e);
     }

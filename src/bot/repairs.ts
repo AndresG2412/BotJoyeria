@@ -1,4 +1,5 @@
-import { lookupRepairOrders, RepairLookup, RepairOrderRow } from '../data/taller';
+import crypto from 'crypto';
+import { countRepairFailures, lookupRepairOrders, recordRepairFailure, RepairLookup, RepairOrderRow } from '../data/taller';
 import { APPOINTMENT_ADDRESS, APPOINTMENT_CITY } from './policies';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -14,26 +15,65 @@ import { APPOINTMENT_ADDRESS, APPOINTMENT_CITY } from './policies';
 
 export const MAX_FAILED_REPAIR_LOOKUPS = 3;
 const FAILED_LOOKUP_WINDOW_MS = 24 * 60 * 60 * 1000;
-const failedLookups = new Map<string, number[]>();
 
-function recentFailures(key: string, now: number): number[] {
-    const recent = (failedLookups.get(key) || []).filter(at => now - at < FAILED_LOOKUP_WINDOW_MS);
-    if (recent.length) failedLookups.set(key, recent);
-    else failedLookups.delete(key);
-    return recent;
+/**
+ * Dónde se cuentan los intentos fallidos. En producción, la base (sobrevive a los reinicios);
+ * si la base no responde, la memoria del proceso, para no quedarse nunca sin límite.
+ */
+export type RepairAttemptStore = {
+    failures(keys: string[], now: number): Promise<number>;
+    record(keys: string[], now: number): Promise<void>;
+};
+
+const memory = new Map<string, number[]>();
+
+function memoryFailures(key: string, now: number): number {
+    const recent = (memory.get(key) || []).filter(at => now - at < FAILED_LOOKUP_WINDOW_MS);
+    if (recent.length) memory.set(key, recent);
+    else memory.delete(key);
+    return recent.length;
 }
 
-export function isRepairLookupLocked(key: string, now = Date.now()): boolean {
-    return recentFailures(key, now).length >= MAX_FAILED_REPAIR_LOOKUPS;
+export const memoryAttemptStore: RepairAttemptStore = {
+    async failures(keys, now) {
+        return Math.max(0, ...keys.map(key => memoryFailures(key, now)));
+    },
+    async record(keys, now) {
+        for (const key of keys) {
+            memoryFailures(key, now);
+            memory.set(key, [...(memory.get(key) || []), now]);
+        }
+    },
+};
+
+export const databaseAttemptStore: RepairAttemptStore = {
+    async failures(keys, now) {
+        const stored = await countRepairFailures(keys, new Date(now - FAILED_LOOKUP_WINDOW_MS));
+        return stored ?? memoryAttemptStore.failures(keys, now);
+    },
+    async record(keys, now) {
+        // También en memoria: si la base se cae justo después, el límite sigue valiendo.
+        await memoryAttemptStore.record(keys, now);
+        await recordRepairFailure(keys, new Date(now));
+    },
+};
+
+/** Claves de conteo: el chat y, si la hay, la cédula (con hash: la cédula nunca se guarda en claro). */
+export function repairAttemptKeys(sessionKey: string, documento?: string | null): string[] {
+    const keys = [`chat:${sessionKey}`];
+    if (documento) keys.push(`doc:${crypto.createHash('sha256').update(documento).digest('hex')}`);
+    return keys;
 }
 
-export function registerFailedRepairLookup(key: string, now = Date.now()): void {
-    failedLookups.set(key, [...recentFailures(key, now), now]);
+export async function isRepairLookupLocked(
+    keys: string[], now = Date.now(), store: RepairAttemptStore = databaseAttemptStore,
+): Promise<boolean> {
+    return (await store.failures(keys, now)) >= MAX_FAILED_REPAIR_LOOKUPS;
 }
 
 /** Solo para pruebas. */
 export function resetRepairLookupAttempts(): void {
-    failedLookups.clear();
+    memory.clear();
 }
 
 /** Número de orden tal como lo escriba el cliente ("#T-0012", "t 0012"): letras y números. */
@@ -126,18 +166,21 @@ export async function checkRepairStatus(
     context: RepairContext,
     lookup: RepairLookup = lookupRepairOrders,
     now = Date.now(),
+    attempts: RepairAttemptStore = databaseAttemptStore,
 ): Promise<string> {
-    if (isRepairLookupLocked(context.sessionKey, now)) {
+    const numero = normalizeOrderNumber(args?.numero_orden);
+    const rawDocument = String(args?.cedula ?? '').trim();
+    const documento = normalizeDocument(rawDocument);
+    const telefono = senderMobile(context.senderPhone);
+    // Se cuenta por chat y por cédula: cambiar de celular no reinicia los intentos contra una cédula.
+    const attemptKeys = repairAttemptKeys(context.sessionKey, documento);
+
+    if (await isRepairLookupLocked(attemptKeys, now, attempts)) {
         return JSON.stringify({
             verificado: false,
             instrucciones: `Por seguridad ya no puedo consultar más reparaciones desde este chat hoy. Dile al cliente que se acerque a la joyería (${APPOINTMENT_ADDRESS}, ${APPOINTMENT_CITY}) con su recibo, o que lo intente mañana. No des más detalles.`,
         });
     }
-
-    const numero = normalizeOrderNumber(args?.numero_orden);
-    const rawDocument = String(args?.cedula ?? '').trim();
-    const documento = normalizeDocument(rawDocument);
-    const telefono = senderMobile(context.senderPhone);
 
     if (rawDocument && !documento) {
         return JSON.stringify({
@@ -184,8 +227,8 @@ export async function checkRepairStatus(
 
     // Sin coincidencias. Nunca decir si la orden o la cédula existen.
     if (documento) {
-        registerFailedRepairLookup(context.sessionKey, now);
-        const left = MAX_FAILED_REPAIR_LOOKUPS - recentFailures(context.sessionKey, now).length;
+        await attempts.record(attemptKeys, now);
+        const left = MAX_FAILED_REPAIR_LOOKUPS - await attempts.failures(attemptKeys, now);
         return JSON.stringify({
             verificado: false,
             instrucciones: numero
