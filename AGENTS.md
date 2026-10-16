@@ -3,7 +3,7 @@
 Bot conversacional con IA que atiende clientes de la joyería Mr. 18Kilates (Pitalito, Colombia) por WhatsApp Cloud API (Meta). También Telegram y panel web de administración. Producción: VPS Windows con PM2 (flujo completo en `DEPLOY.md`).
 
 ## Stack
-TypeScript + Express. Supabase (Postgres + Storage) vía Drizzle ORM. IA vía API compatible con OpenAI (Google AI Studio, configurable con `OPENAI_BASE_URL`/`OPENAI_MODEL`). Google Calendar (citas), Resend (emails). Sin QR ni Puppeteer: Meta entrega a un webhook y el bot responde con Graph API.
+TypeScript + Express. Catálogo leído de la API pública de la tienda (`SITE_URL`, por defecto https://www.mr18kts.online). Sesiones y citas en la base de la tienda (Supabase), esquema `bot`, con `pg` y el rol restringido `bot_joyeria` (`src/data/pool.ts`, `supabase/002_bot_schema.sql`); las tiendas del bot en `data/local-stores.json` (mock en `src/data/connection.ts`). IA configurable en `.env` (`AI_PROVIDER` anthropic|openai, `AI_API_KEY`, `AI_BASE_URL`, `AI_MODELS`): por defecto Claude (`claude-haiku-5-5` con `claude-haiku-4-5` de respaldo); con formato OpenAI sirve DeepSeek. El historial se guarda en formato OpenAI y `src/bot/claude.ts` lo traduce cuando el proveedor usa formato Anthropic. Opcional, un proveedor de respaldo con `AI_FALLBACK_*` (p. ej. Gemini) que entra si fallan los modelos principales. Los modelos deben aceptar herramientas e imágenes. Google Calendar (citas), Resend (emails). Sin QR ni Puppeteer: Meta entrega a un webhook y el bot responde con Graph API.
 
 ## Comandos
 ```bash
@@ -13,34 +13,40 @@ npm run build                 # tsc -> dist/
 npm start                     # node dist/app.js (requiere build previo)
 npm test                      # todos los tests: tsx --test tests/*.test.ts
 npx tsx --test tests/policies.test.ts   # un solo archivo de tests
-npx ts-node migrate.ts        # migraciones: ¡DESTRUCTIVO! (ver Gotchas)
-npx drizzle-kit generate       # generar SQL nuevo en drizzle/ tras editar schema.ts
 ```
-No existe `npm run db:migrate` (referencia vieja en `.env.example`); el comando real es el de arriba.
 Antes de un commit: `npm run build && npm test`.
 
 ## Estructura
 - `src/app.ts` — entrypoint: Express y arranque de bots.
-- `src/bot/` — cerebro: `agent.ts` (IA), `prompts.ts` (system prompt con el flujo fijo), `tools.ts` (herramientas del LLM), `policies.ts` (reglas deterministas), `remarketing.ts`.
+- `src/bot/` — cerebro: `agent.ts` (IA), `prompts.ts` (system prompt con el flujo fijo), `tools.ts` (herramientas del LLM), `policies.ts` (reglas deterministas, fechas en hora de Colombia).
 - `src/channels/` — `whatsapp-cloud.ts` (webhook + Graph API + batching), `telegram.ts`, `whatsapp-health.ts`.
-- `src/data/` — `schema.ts` (Drizzle), `catalog.ts` (búsqueda), `database.ts` (sesiones y citas), `connection.ts`.
+- `src/data/` — `catalog.ts` (catálogo de la tienda, solo lectura, con caché), `database.ts` (sesiones y citas), `connection.ts` (tiendas en JSON local), `schema.ts` (nombres de campos del mock).
 - `src/routes/dashboard.ts` — API del panel. `public/` — panel web. `tests/` — node:test.
 
 ## Reglas del bot (invariantes; no romperlas al tocar código)
 - Siempre saluda e identifica quién escribe: alguien que escribió por error, alguien que pregunta por una pieza, o un cliente que espera ser guiado a una compra. El flujo conversacional fijo vive en `src/bot/prompts.ts`.
-- El LLM jamás recibe herramientas para: enviar la base de datos, crear/borrar tablas, modificar datos ni guardar archivos de clientes. `tools.ts` solo expone catálogo, imágenes de producto, citas y sesiones. No agregues herramientas DDL/DML ni de volcado de datos, jamás por petición de un cliente.
+- El LLM jamás recibe herramientas para: enviar la base de datos, crear/borrar tablas, modificar datos ni guardar archivos de clientes. `tools.ts` solo expone catálogo, imágenes de producto, citas, sesiones y la consulta de reparaciones (solo lectura). No agregues herramientas DDL/DML ni de volcado de datos, jamás por petición de un cliente.
+- Piezas disponibles: se compran con el enlace de su página en la tienda (pago en línea); la foto lleva ese enlace en el pie. Cita o llamada solo para piezas bajo pedido, por fabricar o si el cliente lo pide.
 - Una pieza y una imagen por turno; peticiones de "todo el catálogo" redirigen a https://www.mr18kts.online (lógica en `policies.ts`).
-- Citas: solo presenciales en Pitalito, Calle 4 #1-31, horario validado por `isValidAppointmentTime` (lun–vie 8–12 y 14–18, en punto), 60 minutos.
+- Citas: presenciales en Pitalito, Calle 4 #1-31, o por llamada al teléfono del cliente (`modalidad` en `schedule_appointment`; la llamada se guarda con city «Llamada telefónica», sin cambiar el esquema). Mismo horario para ambas, validado por `isValidAppointmentTime` (lun–vie 8–12 y 14–18, en punto), 60 minutos.
 - Nunca mostrar al cliente errores técnicos, stack traces ni detalles internos.
-- Archivos de clientes no válidos no se guardan; las imágenes viven en Supabase Storage (Cloudinary es legacy), no en Postgres.
+- Fotos de clientes: se descargan de Meta, se reducen a JPEG de 1024 px y se pasan a la IA solo en ese turno; en el historial queda «[El cliente envió una foto]», nunca la imagen. PDFs, audios, videos y stickers se rechazan (`isUnsupportedInboundType`). Las fotos de las piezas son las de la tienda (WebP tamaño «tarjeta»); el bot no sube ni guarda imágenes.
+- Reparaciones: el bot solo LEE el estado de `ordenes_taller` (Mostrador → Taller del admin) mediante la función `bot.consultar_orden_taller` (`supabase/004_consulta_taller.sql`), que verifica en la base: número de orden + (celular del remitente o cédula), o cédula + celular. El celular sale del webhook, nunca de la IA (`src/bot/repairs.ts`). Nunca confirmar si una orden o cédula existe cuando no se verificó; 3 intentos fallidos con cédula por chat al día. El bot no ve notas internas, técnico, pesos ni precio.
+- Chats en el admin de la tienda (Mostrador → WhatsApp, solo el dueño): la tienda llama a `/admin-api` (`src/routes/admin-api.ts`) desde su servidor con `BOT_ADMIN_API_TOKEN`. El bot es el único que envía y pausa; el destino de una respuesta sale siempre del chat guardado, nunca de la petición. El chat se devuelve sin instrucciones ni llamadas internas de la IA (`toReadableMessages`).
+- El catálogo se administra SOLO en el panel de la tienda (/admin). El panel del bot no crea, edita ni borra piezas o categorías (responde 410).
 
 ## Datos personales
-El bot guarda nombre y teléfono de clientes para citas. Aplica la Ley 1581 (Colombia): minimizar lo que se guarda y no registrar datos personales en logs.
+El bot guarda nombre y teléfono de clientes para citas. Aplica la Ley 1581 (Colombia): minimizar lo que se guarda y no registrar datos personales en logs. `logger` enmascara los números de celular (deja los últimos 4) y `executeTool` registra solo los nombres de los argumentos.
 
 ## Gotchas
-- `migrate.ts` hace `DROP TABLE` de products/sessions/stores antes de migrar: destruye datos. Ejecutarlo solo a propósito y con respaldo.
+- La base de la tienda (Payload) tiene tablas `products` y `categorias` con OTRA estructura: el bot nunca debe escribir en ellas ni crear tablas con esos nombres. El `migrate.ts` que las borraba se eliminó.
+- Fechas de citas: usar `todayInBogota`, `parseAppointmentDate` y `appointmentInstant` (`policies.ts`); nunca `new Date(y, m, d, h)` con la zona del servidor.
 - `.env` y `google-service-account.json` jamás al repo (ya están en `.gitignore`).
+- La conexión a la base verifica TLS con la CA de Supabase (`supabase-ca.crt`). Nunca usar `rejectUnauthorized: false`: si falta el certificado, el bot no se conecta.
+- Transferencia (egress) de Supabase gratis = 5 GB/mes compartidos con la tienda: nunca leer el historial de TODAS las sesiones (el panel consulta cada 5 s). Listas → `getSessionSummaries`; historial → `getSessionDetail`/`getMemory` de UNA sesión; filtros masivos en SQL (`getStalePausedSessions`). Las sesiones se guardan sin el system prompt (`withoutSystemPrompt`).
+- Coexistencia (número de la joyería en la app WhatsApp Business + Cloud API): el webhook `smb_message_echoes` trae lo que la joyería contesta desde el celular → `markHumanReply` lo guarda y pone `human_until`; mientras dure, el bot no responde ni descarta respuestas ya pensadas (`isHumanAttending`). `account_update` avisa si se desconecta. Requiere `supabase/003_human_takeover.sql`.
+- Cambios de esquema: editar `supabase/002_bot_schema.sql` (o agregar un 003) y aplicarlo en el SQL Editor; el rol `bot_joyeria` no puede crear tablas.
 - WhatsApp solo acepta JPEG/PNG: las WebP del catálogo se convierten con `sharp` al enviar.
-- Mensajes seguidos del mismo cliente se agrupan (3 s de silencio, máx. 10 s) antes de llamar a la IA; hay una cola por cliente y concurrencia limitada (`WHATSAPP_BATCH_*`, `BOT_MAX_*`).
+- Mensajes seguidos del mismo cliente se agrupan (1,5 s de silencio, máx. 5 s) antes de llamar a la IA; con la Cloud API no hay esperas para «parecer humano» (0,3 s entre mensajes, solo por orden). Si la IA no responde en `AI_TIMEOUT_MS` (25 s) se reintenta una vez; hay una cola por cliente y concurrencia limitada (`WHATSAPP_BATCH_*`, `BOT_MAX_*`).
 - El webhook exige firma válida (`META_APP_SECRET`) y token de usuario del sistema de Meta (los temporales caducan en 24 h).
 - `deploy.bat` está desactualizado (usa rama `main`; el repo usa `master`). El despliegue oficial está en `DEPLOY.md`.

@@ -8,8 +8,9 @@ import { sendAppointmentNotification } from '../utils/mailer';
 import { isWeekend, isHoliday, nextBusinessDay } from '../utils/holidays';
 import axios from 'axios';
 import path from 'path';
-import { APPOINTMENT_ADDRESS, APPOINTMENT_CITY, APPOINTMENT_DURATION_MINUTES, APPOINTMENT_HOURS, availabilityInstruction, availabilityLabel, isValidAppointmentTime } from './policies';
-import { parseWebProductLead } from '../utils/web-product';
+import { APPOINTMENT_ADDRESS, APPOINTMENT_CITY, APPOINTMENT_DURATION_MINUTES, APPOINTMENT_HOURS, AppointmentMode, CALL_APPOINTMENT_CITY, appointmentInstant, appointmentPlace, availabilityInstruction, availabilityLabel, isAfterTodayInBogota, isValidAppointmentTime, parseAppointmentDate } from './policies';
+import { parseWebProductLead, webLeadReference } from '../utils/web-product';
+import { checkRepairStatus } from './repairs';
 
 // ─────────────────────────────────────────
 //  Cola temporal de imágenes pendientes
@@ -32,8 +33,9 @@ async function getWebLeadProductReference(sessionId: string | undefined, storeId
         if (message?.role !== 'user' || typeof message.content !== 'string') continue;
         const lead = parseWebProductLead(message.content);
         if (!lead) continue;
-        const product = await getProductById(lead.productId, storeId);
-        return product ? `${product.name} — Ref: ${lead.productId}` : lead.productId;
+        const product = await getProductById(webLeadReference(lead), storeId);
+        const tono = lead.tono ? ` (${lead.tono})` : '';
+        return product ? `${product.name}${tono} — Ref: ${product.id}` : `${webLeadReference(lead)}${tono}`;
     }
     return null;
 }
@@ -54,6 +56,19 @@ function queueImage(sessionId: string, base64DataUri: string, caption?: string) 
     }
 }
 
+function calendarClient() {
+    const keyFilePath = path.resolve(process.cwd(), config.GOOGLE_SERVICE_ACCOUNT_PATH || 'google-service-account.json');
+    const auth = new google.auth.GoogleAuth({ keyFile: keyFilePath, scopes: ['https://www.googleapis.com/auth/calendar'] });
+    return google.calendar({ version: 'v3', auth });
+}
+
+/** Celular (3xx) o fijo (60x) colombiano de 10 dígitos, con o sin 57 delante; null si no es válido. */
+export function normalizeColombianMobile(phone: string): string | null {
+    const digits = (phone || '').replace(/\D/g, '');
+    const local = digits.startsWith('57') && digits.length === 12 ? digits.slice(2) : digits;
+    return /^(3\d{9}|60\d{8})$/.test(local) ? local : null;
+}
+
 // ─────────────────────────────────────────
 //  Helper: resumen breve de productos para el modelo
 // ─────────────────────────────────────────
@@ -65,6 +80,8 @@ function summarizeProductsBrief(products: any[]) {
         nombre: p.name || p.nombre || '',
         precio: p.price > 0 ? p.price : null,
         disponibilidad: availabilityLabel(p.stock),
+        // Página de la pieza en la tienda: ahí se compra y se paga en línea.
+        enlace: p.url || null,
     }));
 }
 
@@ -149,20 +166,20 @@ export const botTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         function: {
             name: 'schedule_appointment',
             description: [
-                 'Registra una cita de atención presencial en Pitalito en Google Calendar.',
+                 'Registra una cita (presencial en Pitalito o por llamada) en Google Calendar.',
                  'SOLO llama esta función cuando el cliente haya proporcionado nombre completo, fecha y hora.',
                 'REGLAS ESTRICTAS:',
                  `- La cita dura ${APPOINTMENT_DURATION_MINUTES} minutos aproximadamente. La asesoría puede tardar más si el cliente aún está explorando opciones.`,
                  '- La fecha debe ser MÍNIMO el día siguiente al de hoy.',
-                 `- SOLO se atiende presencialmente en ${APPOINTMENT_CITY}, ${APPOINTMENT_ADDRESS}. Horario: ${APPOINTMENT_HOURS}.`,
+                 `- modalidad "presencial": en ${APPOINTMENT_CITY}, ${APPOINTMENT_ADDRESS}. modalidad "llamada": un asesor llama al teléfono del cliente. Mismo horario para ambas: ${APPOINTMENT_HOURS}.`,
                  '- SOLO se agendan días hábiles: de lunes a viernes, NUNCA sábados, domingos ni días festivos.',
                  '- La hora de inicio debe ser en punto. Las franjas válidas son 08:00–12:00 y 14:00–18:00. NUNCA permitas minutos.',
                 '- NUNCA modifiques ni canceles citas existentes. Solo crea nuevas.',
                 '- NUNCA reveles información de citas de otros clientes ni de sus fechas.',
                 '',
                 'DATOS:',
-                 '- Necesitas del cliente: client_name, phone, date y time.',
-                 `- city siempre es ${APPOINTMENT_CITY}; address siempre es ${APPOINTMENT_ADDRESS}. No preguntes ciudad de envío.`,
+                 '- Necesitas del cliente: client_name, phone, date, time y la modalidad que eligió.',
+                 '- No preguntes ciudad ni dirección: la presencial siempre es en Pitalito y la llamada es al teléfono del cliente.',
                  '- property_reference es el nombre/referencia de la pieza o "asesoría general".',
             ].join(' '),
             parameters: {
@@ -183,7 +200,12 @@ export const botTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                      appointment_type: {
                          type: 'string',
                          enum: ['asesoria_presencial', 'producto_bajo_pedido'],
-                         description: 'Tipo de cita presencial.'
+                         description: 'Motivo de la cita: asesoría general o pieza bajo pedido / para fabricar.'
+                    },
+                    modalidad: {
+                        type: 'string',
+                        enum: ['presencial', 'llamada'],
+                        description: 'presencial = en la joyería en Pitalito; llamada = un asesor llama al cliente al teléfono indicado.'
                     },
                     property_reference: {
                         type: 'string',
@@ -194,7 +216,7 @@ export const botTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                         description: 'Número de WhatsApp de 10 dígitos del cliente.'
                     }
                 },
-                 required: ['client_name', 'phone', 'date', 'time', 'appointment_type']
+                 required: ['client_name', 'phone', 'date', 'time', 'appointment_type', 'modalidad']
             }
         }
     },
@@ -210,6 +232,21 @@ export const botTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                     time: { type: 'string', description: 'Nueva hora HH:MM en punto, entre 08:00–12:00 o 14:00–18:00.' },
                 },
                 required: ['date', 'time']
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'check_repair_status',
+            description: 'Consulta el estado de una joya que el cliente dejó en reparación en el taller de la joyería (solo lectura). La verificación la hace el sistema con el WhatsApp desde el que escribe el cliente. Úsala cuando el cliente pregunte por su reparación, con el número de orden de su recibo y/o la cédula del titular, tal como los escribió.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    numero_orden: { type: 'string', description: 'Número de orden del recibo del taller, si el cliente lo dio.' },
+                    cedula: { type: 'string', description: 'Cédula del titular de la orden, si el cliente la dio.' },
+                },
+                required: []
             }
         }
     },
@@ -245,7 +282,8 @@ export async function executeTool(
     adminCalendarEmail?: string,   
     pqrEmail?: string              
 ): Promise<string> {
-    logger.info(`Ejecutando tool: ${name}`, args);
+    // Solo los nombres de los campos: los valores pueden traer nombre y teléfono del cliente.
+    logger.info(`Ejecutando tool: ${name} (${Object.keys(args || {}).join(', ') || 'sin argumentos'})`);
 
     try {
         switch (name) {
@@ -262,7 +300,7 @@ export async function executeTool(
                 }
                 return JSON.stringify({
                     productos: summarizeProductsBrief(products.slice(0, 1)),
-                    instrucciones: 'Presenta SOLO una pieza con nombre y precio, en una línea y sin listas. Si el stock es 0, indica que es bajo pedido y que debe separar cita o visitar personalmente para confirmar. Si pide más detalles, usa get_product_details. Si pide foto, usa send_product_image.'
+                    instrucciones: 'Presenta SOLO una pieza con nombre y precio, en una línea y sin listas. Si el stock es 0, indica que es bajo pedido y ofrece cita en Pitalito o llamada para confirmarla. Si pide más detalles, usa get_product_details. Si pide foto, usa send_product_image. Si la pieza está disponible y el cliente quiere comprarla, compártele su enlace: ahí la paga en la tienda en línea. No le ofrezcas cita ni llamada para comprar una pieza disponible.'
                 });
             }
 
@@ -298,19 +336,27 @@ export async function executeTool(
                     coincidencias: 1,
                     producto: summarizeProductsBrief([product])[0],
                     instrucciones: product.stock > 0
-                        ? 'Presenta solo esta pieza con nombre y precio. Si pide detalles usa get_product_details; si pide foto usa send_product_image.'
-                        : 'Presenta solo esta pieza e indica que está disponible bajo pedido y que debe separar una cita presencial para confirmar disponibilidad.',
+                        ? 'Presenta solo esta pieza con nombre y precio. Si pide detalles usa get_product_details; si pide foto usa send_product_image. Si la pieza está disponible y el cliente quiere comprarla, compártele su enlace: ahí la paga en la tienda en línea. No le ofrezcas cita ni llamada para comprar una pieza disponible.'
+                        : 'Presenta solo esta pieza e indica que está disponible bajo pedido; ofrece cita en Pitalito o llamada para confirmarla.',
                 });
             }
 
             // ── Detalle de una propiedad ────────────────────────────────
             case 'get_product_details': {
                 const product = await getProductById(args.id, storeId);
-                if (!product) return JSON.stringify({ error: 'No se encontró la propiedad con ese ID.' });
+                if (!product) return JSON.stringify({ error: 'No se encontró una pieza con esa referencia.' });
+                const { imagenes, imageUrl, checkoutUrl, storeId: _store, ...details } = product;
                 return JSON.stringify({
-                    ...product,
+                    ...details,
+                    fotos: imagenes.length,
+                    precio: product.price > 0 ? product.price : 'a consultar con un asesor',
                     disponibilidad: availabilityLabel(product.stock),
                     instrucciones_disponibilidad: availabilityInstruction(product.stock),
+                    instrucciones_enlace: product.url
+                        ? (product.stock > 0
+                            ? `Enlace de la pieza: ${product.url}. Si la pieza está disponible y el cliente quiere comprarla, compártele su enlace: ahí la paga en la tienda en línea. No le ofrezcas cita ni llamada para comprar una pieza disponible.`
+                            : `Si el cliente quiere ver la pieza completa o más fotos, compártele este enlace: ${product.url}`)
+                        : undefined,
                 });
             }
 
@@ -333,11 +379,15 @@ export async function executeTool(
                 }
                 const productInfo = await getProductById(args.product_id, storeId);
                 const baseName = productInfo ? productInfo.name : 'Joya';
+                // Pieza disponible: la foto lleva el enlace para comprarla y pagarla en la tienda.
+                const buyLink = productInfo && productInfo.stock > 0 && productInfo.url ? productInfo.url : '';
                 let sent = 0;
 
                 for (let i = 0; i < images.length; i++) {
                     const imageUrl = images[i];
-                    const caption = i === 0 ? `📸 ${baseName}` : undefined;
+                    const caption = i === 0
+                        ? (buyLink ? `📸 ${baseName}\nCompra aquí: ${buyLink}` : `📸 ${baseName}`)
+                        : undefined;
                     try {
                         if (imageUrl.startsWith('data:')) {
                             queueImage(sessionKey, imageUrl, caption);
@@ -370,23 +420,26 @@ export async function executeTool(
                     message: `Se enviarán ${sent} imagen(es) de ${baseName} junto con tu respuesta.`,
                     instructions_for_ai: remaining > 0
                         ? `Las fotos principales se envían con tu respuesta. Hay ${remaining} foto(s) más de esta joya: ofrécelas solo si el cliente quiere ver más. Continúa tu respuesta de texto normalmente.`
-                        : 'Las fotos se envían con tu respuesta. Continúa tu respuesta de texto normalmente.'
+                        : (buyLink
+                            ? 'La foto se envía con el nombre de la pieza y su enlace para comprarla: no repitas el enlace. Responde solo con una pregunta corta, por ejemplo "¿Te ayudo con algo más?". No ofrezcas cita ni llamada.'
+                            : 'Las fotos se envían con tu respuesta. Continúa tu respuesta de texto normalmente.')
                 });
             }
 
             // ── Agendar cita en Google Calendar ────────────────────────
             case 'schedule_appointment': {
-                const { client_name, date, time, appointment_type, property_reference, phone } = args as {
+                const { client_name, date, time, appointment_type, property_reference, phone, modalidad } = args as {
                     client_name: string;
                     date: string;
                     time: string;
                     appointment_type: 'asesoria_presencial' | 'producto_bajo_pedido';
                     property_reference?: string;
                     phone?: string;
+                    modalidad?: AppointmentMode;
                 };
 
-                const effectiveCity = APPOINTMENT_CITY;
-                const effectiveAddress = APPOINTMENT_ADDRESS;
+                const isCall = modalidad === 'llamada';
+                const { city: effectiveCity, address: effectiveAddress } = appointmentPlace(modalidad);
                 const effectiveReference = property_reference?.trim()
                     || await getWebLeadProductReference(sessionId, storeId)
                     || 'Asesoría general';
@@ -405,12 +458,8 @@ export async function executeTool(
                 }
 
                 // ── Validar que el número de teléfono sea válido (10 dígitos colombianos) ──
-                const cleanPhone = phone.replace(/\D/g, '');
-                const normalizedPhone = (cleanPhone.startsWith('57') && cleanPhone.length === 12)
-                    ? cleanPhone.slice(2)
-                    : cleanPhone;
-
-                if (normalizedPhone.length !== 10) {
+                const normalizedPhone = normalizeColombianMobile(phone);
+                if (!normalizedPhone) {
                     return JSON.stringify({
                         success: false,
                         instructions_for_ai: 'El número de teléfono proporcionado no es válido. Debe ser un número de celular de 10 dígitos (por ejemplo, 3123456789). Dile al cliente que por favor proporcione un número de celular válido de 10 dígitos para continuar.'
@@ -431,16 +480,15 @@ export async function executeTool(
                 }
 
                 // ── Validaciones de negocio iniciales ──
-                const [year, month, day] = date.split('-').map(Number);
-                const [hour, minute] = time.split(':').map(Number);
+                const appointmentDate = parseAppointmentDate(date);
+                if (!appointmentDate) {
+                    return JSON.stringify({
+                        success: false,
+                        instructions_for_ai: 'La fecha no es válida. Pídele al cliente que confirme el día que prefiere (de lunes a viernes).'
+                    });
+                }
 
-                const tomorrow = new Date();
-                tomorrow.setDate(tomorrow.getDate() + 1);
-                tomorrow.setHours(0, 0, 0, 0);
-
-                const appointmentDate = new Date(year, month - 1, day);
-
-                if (appointmentDate < tomorrow) {
+                if (!isAfterTodayInBogota(date)) {
                     return JSON.stringify({
                         success: false,
                         instructions_for_ai: 'La fecha solicitada es hoy o en el pasado. Dile al cliente que la atención presencial más próxima disponible es mañana y pregúntale qué día le queda bien.'
@@ -477,22 +525,15 @@ export async function executeTool(
 
                 // ── Flujo con Google Calendar API ──
                 try {
-                    const keyFilePath = process.env.GOOGLE_SERVICE_ACCOUNT_PATH
-                        ? path.resolve(process.cwd(), process.env.GOOGLE_SERVICE_ACCOUNT_PATH)
-                        : path.resolve(process.cwd(), 'google-service-account.json');
-                    const auth = new google.auth.GoogleAuth({
-                        keyFile: keyFilePath,
-                        scopes: ['https://www.googleapis.com/auth/calendar'],
-                    });
-                    const calendar = google.calendar({ version: 'v3', auth });
+                    const calendar = calendarClient();
 
                     const typeLabels: Record<string, string> = {
                         asesoria_presencial: 'Asesoría presencial',
                         producto_bajo_pedido: 'Producto bajo pedido',
                     };
 
-                    const startTime = new Date(year, month - 1, day, hour, minute);
-                    const endTime = new Date(startTime.getTime() + 60 * 60 * 1000); // Duración fija: 1 hora
+                    const startTime = appointmentInstant(date, time);
+                    const endTime = new Date(startTime.getTime() + APPOINTMENT_DURATION_MINUTES * 60 * 1000);
 
                     // ── VERIFICACIÓN DE DISPONIBILIDAD (Cruces de Horarios) ──
                     const existingEvents = await calendar.events.list({
@@ -508,7 +549,7 @@ export async function executeTool(
                         return JSON.stringify({
                             success: false,
                             error: 'Horario ocupado',
-                            instructions_for_ai: `El horario de las ${time} del día ${date} ya está reservado. Dile de forma muy amable al cliente que ese espacio no está disponible e invítalo a proponer otra hora (en punto entre la 1:00 PM y las 5:00 PM) u otra fecha.`
+                            instructions_for_ai: `El horario de las ${time} del día ${date} ya está reservado. Dile de forma muy amable al cliente que ese espacio no está disponible e invítalo a proponer otra hora en punto (${APPOINTMENT_HOURS}) u otra fecha.`
                         });
                     }
 
@@ -519,10 +560,10 @@ export async function executeTool(
                             summary: `${typeLabels[appointment_type]} (${effectiveCity}) — ${client_name}`,
                             description: [
                                 `Cliente: ${client_name}`,
-                                `Atención presencial: ${effectiveCity}`,
-                                phone ? `WhatsApp: ${phone}` : '',
+                                isCall ? `Llamar al: ${normalizedPhone}` : `Atención presencial: ${effectiveCity}`,
+                                `WhatsApp: ${normalizedPhone}`,
                                 `Joya/interés: ${effectiveReference}`,
-                                `Dirección: ${effectiveAddress}`,
+                                isCall ? '' : `Dirección: ${effectiveAddress}`,
                                 `Tipo: ${typeLabels[appointment_type]}`,
                                 `Agendado automáticamente vía bot de WhatsApp — Mr. 18Kilates`,
                             ].filter(Boolean).join('\n'),
@@ -539,7 +580,7 @@ export async function executeTool(
                         appointmentType: appointment_type,
                         propertyReference: effectiveReference,
                         address: effectiveAddress,
-                        phone: phone || '',
+                        phone: normalizedPhone,
                         calendarEventId: createdEvent.data.id || undefined,
                         status: 'scheduled',
                         createdAt: new Date()
@@ -564,7 +605,7 @@ export async function executeTool(
                         date,
                         time,
                         appointmentType: appointment_type,
-                        phone,
+                        phone: normalizedPhone,
                         propertyReference: effectiveReference,
                         address: effectiveAddress,
                     });
@@ -579,7 +620,9 @@ export async function executeTool(
                         confirmed_time: time,
                         city: effectiveCity,
                         contact_info: contactInfo,
-                        instructions_for_ai: `La cita presencial quedó registrada en ${effectiveCity}, ${effectiveAddress}. Confirma al cliente la fecha ${date} y hora ${time}. Recuérdale que solo atendemos en ${effectiveCity} y que un asesor lo llamará horas antes para confirmar. Explica que dura aproximadamente una hora, aunque la asesoría puede tardar más si aún está explorando opciones. ${contactInfo}`
+                        instructions_for_ai: isCall
+                            ? `La llamada quedó agendada. Confirma al cliente en una frase corta que un asesor lo llamará el ${date} a las ${time} al ${normalizedPhone}. ${contactInfo}`
+                            : `La cita presencial quedó registrada en ${effectiveCity}, ${effectiveAddress}. Confirma al cliente en una frase corta la fecha ${date}, la hora ${time} y la dirección, y que un asesor lo llamará antes para confirmar. ${contactInfo}`
                     });
 
                 } catch (calErr: any) {
@@ -608,12 +651,8 @@ export async function executeTool(
                     return JSON.stringify({ success: false, instructions_for_ai: 'La nueva fecha u hora no es válida. Usa un día hábil y una hora exacta entre 8:00 AM–12:00 PM o 2:00 PM–6:00 PM.' });
                 }
 
-                const [year, month, day] = date.split('-').map(Number);
-                const newDate = new Date(year, month - 1, day);
-                const tomorrow = new Date();
-                tomorrow.setDate(tomorrow.getDate() + 1);
-                tomorrow.setHours(0, 0, 0, 0);
-                if (newDate < tomorrow || isWeekend(newDate) || isHoliday(newDate)) {
+                const newDate = parseAppointmentDate(date);
+                if (!newDate || !isAfterTodayInBogota(date) || isWeekend(newDate) || isHoliday(newDate)) {
                     return JSON.stringify({ success: false, instructions_for_ai: 'La nueva fecha debe ser un día hábil posterior a hoy. Propón otra fecha de lunes a viernes.' });
                 }
 
@@ -622,12 +661,8 @@ export async function executeTool(
                 }
 
                 try {
-                    const keyFilePath = process.env.GOOGLE_SERVICE_ACCOUNT_PATH
-                        ? path.resolve(process.cwd(), process.env.GOOGLE_SERVICE_ACCOUNT_PATH)
-                        : path.resolve(process.cwd(), 'google-service-account.json');
-                    const auth = new google.auth.GoogleAuth({ keyFile: keyFilePath, scopes: ['https://www.googleapis.com/auth/calendar'] });
-                    const calendar = google.calendar({ version: 'v3', auth });
-                    const startTime = new Date(year, month - 1, day, Number(time.split(':')[0]), 0);
+                    const calendar = calendarClient();
+                    const startTime = appointmentInstant(date, time);
                     const endTime = new Date(startTime.getTime() + APPOINTMENT_DURATION_MINUTES * 60 * 1000);
                     const existingEvents = await calendar.events.list({
                         calendarId: adminCalendarEmail,
@@ -655,23 +690,36 @@ export async function executeTool(
                         return JSON.stringify({ success: false, instructions_for_ai: 'El calendario se actualizó, pero la base de datos no confirmó el cambio. Un asesor debe revisar la cita.' });
                     }
 
+                    const pendingIsCall = pending.city === CALL_APPOINTMENT_CITY;
+                    const pendingPlace = appointmentPlace(pendingIsCall ? 'llamada' : 'presencial');
                     sendAppointmentNotification({
                         adminEmail: adminCalendarEmail,
                         clientName: pending.clientName,
-                        city: APPOINTMENT_CITY,
+                        city: pendingPlace.city,
                         date,
                         time,
                         appointmentType: pending.appointmentType,
                         phone: pending.phone,
                         propertyReference: pending.propertyReference,
-                        address: APPOINTMENT_ADDRESS,
+                        address: pendingPlace.address,
                     });
 
-                    return JSON.stringify({ success: true, confirmed_date: date, confirmed_time: time, instructions_for_ai: `La cita fue reprogramada para el ${date} a las ${time} en ${APPOINTMENT_ADDRESS}, ${APPOINTMENT_CITY}.` });
+                    return JSON.stringify({ success: true, confirmed_date: date, confirmed_time: time, instructions_for_ai: pendingIsCall
+                        ? `La llamada fue reprogramada: un asesor llamará al cliente el ${date} a las ${time}.`
+                        : `La cita fue reprogramada para el ${date} a las ${time} en ${APPOINTMENT_ADDRESS}, ${APPOINTMENT_CITY}.` });
                 } catch (error: any) {
                     logger.error(`Error reprogramando cita: ${error.message}`);
                     return JSON.stringify({ success: false, instructions_for_ai: 'No pude reprogramar la cita por un problema técnico. Un asesor te ayudará a confirmarla.' });
                 }
+            }
+
+            // ── Estado de una reparación (taller de la tienda) ─────────
+            case 'check_repair_status': {
+                // El celular sale del webhook, nunca de los argumentos de la IA.
+                return await checkRepairStatus(args || {}, {
+                    sessionKey: sessionId || `${storeId}_${senderPhone}`,
+                    senderPhone,
+                });
             }
 
             // ── Cerrar conversación ─────────────────────────────────────

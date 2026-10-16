@@ -1,7 +1,7 @@
 /** Reglas deterministas de negocio que no deben depender únicamente del modelo. */
 
 export const MULTIPLE_PRODUCT_RESPONSE =
-    'Para ver varias opciones, visita nuestra página: https://www.mr18kts.online. Si no estás seguro de cuál elegir, revisa el catálogo y dime el nombre de la pieza que te interese.';
+    'Todas las opciones están en https://www.mr18kts.online. Dime el nombre de la pieza que te guste y te ayudo.';
 
 export const SINGLE_PRODUCT_RESPONSE =
     'Solo puedo mostrarte un producto a la vez. Selecciona la pieza que deseas ver.';
@@ -10,12 +10,58 @@ export const MULTIPLE_IMAGE_RESPONSE =
     'No es posible enviar varias imágenes. Selecciona un solo producto y te mostraré una imagen.';
 
 export const UNSUPPORTED_FILE_RESPONSE =
-    'Solo puedo ayudarte mostrando productos de nuestro catálogo. Envíame el nombre o referencia de la joya que te interesa.';
+    'Solo leo texto y fotos. Envíame una foto o el nombre de la joya del catálogo que te interesa.';
 
 export const APPOINTMENT_CITY = 'Pitalito';
 export const APPOINTMENT_ADDRESS = 'Calle 4 #1-31';
 export const APPOINTMENT_DURATION_MINUTES = 60;
+
+// Las citas también pueden ser por llamada (mismos días, horas y calendario que las presenciales).
+// Se guardan en las columnas de texto city/address, sin cambiar el esquema de bot.appointments.
+export type AppointmentMode = 'presencial' | 'llamada';
+export const CALL_APPOINTMENT_CITY = 'Llamada telefónica';
+export const CALL_APPOINTMENT_ADDRESS = 'Por teléfono';
+
+/** Lugar que se guarda y se muestra según la modalidad de la cita. */
+export function appointmentPlace(mode: AppointmentMode | undefined): { city: string; address: string } {
+    return mode === 'llamada'
+        ? { city: CALL_APPOINTMENT_CITY, address: CALL_APPOINTMENT_ADDRESS }
+        : { city: APPOINTMENT_CITY, address: APPOINTMENT_ADDRESS };
+}
 export const APPOINTMENT_HOURS = 'lunes a viernes, de 8:00 AM a 12:00 PM y de 2:00 PM a 6:00 PM';
+
+/** Colombia no tiene horario de verano: siempre UTC-5. */
+const BOGOTA_UTC_OFFSET = '-05:00';
+
+/** Fecha de hoy en Colombia (YYYY-MM-DD), sin importar la zona horaria del servidor. */
+export function todayInBogota(now = new Date()): string {
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Bogota', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(now);
+}
+
+/** Valida una fecha YYYY-MM-DD real (rechaza 2026-02-30) y la devuelve como día local. */
+export function parseAppointmentDate(value: string): Date | null {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec((value || '').trim());
+    if (!match) return null;
+    const [year, month, day] = match.slice(1).map(Number);
+    const date = new Date(year, month - 1, day);
+    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+    return date;
+}
+
+/** La cita debe ser desde mañana (hora de Colombia) en adelante. */
+export function isAfterTodayInBogota(date: string, now = new Date()): boolean {
+    return date.trim() > todayInBogota(now);
+}
+
+/** Instante exacto de la cita en Colombia, para Google Calendar. */
+export function appointmentInstant(date: string, time: string): Date {
+    const [hour, minute] = time.trim().split(':').map(Number);
+    const hh = String(hour).padStart(2, '0');
+    const mm = String(minute).padStart(2, '0');
+    return new Date(`${date.trim()}T${hh}:${mm}:00${BOGOTA_UTC_OFFSET}`);
+}
 
 export function isValidAppointmentTime(time: string): boolean {
     const match = /^(\d{1,2}):(\d{2})$/.exec((time || '').trim());
@@ -68,12 +114,13 @@ export function availabilityLabel(stock: number): 'disponible' | 'bajo_pedido' {
 
 export function availabilityInstruction(stock: number): string {
     return availabilityLabel(stock) === 'bajo_pedido'
-        ? 'Esta pieza está disponible bajo pedido. Indica que debe separar una cita o visitarnos personalmente para confirmar disponibilidad.'
-        : 'Esta pieza aparece disponible en el catálogo.';
+        ? 'Esta pieza está disponible bajo pedido. Ofrece una cita en Pitalito o una llamada para confirmar disponibilidad.'
+        : 'Esta pieza aparece disponible en el catálogo: si el cliente quiere comprarla, compártele el enlace de la pieza para pagarla en línea.';
 }
 
+// Las fotos (`image`) sí se aceptan: el bot las mira para buscar una pieza parecida.
 const UNSUPPORTED_INBOUND_TYPES = new Set([
-    'image', 'document', 'audio', 'video', 'sticker', 'contacts', 'location',
+    'document', 'audio', 'video', 'sticker', 'contacts', 'location',
 ]);
 
 export function isUnsupportedInboundType(type?: string): boolean {

@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
-import { getAllSessions, deleteSession, getMemory, saveMemory } from '../data/database';
-import { getAllProducts, createProduct, updateProduct, deleteProduct, getAllCategorias, createCategoria, updateCategoria, deleteCategoria } from '../data/catalog';
-import { db } from '../data/connection';
+import { getSessionSummaries, getSessionDetail, deleteSession, getMemory, saveMemory, clearHumanTakeover } from '../data/database';
+import { getAllProducts, getAllCategorias, clearCatalogCache } from '../data/catalog';
+import { db, deleteLocalStore } from '../data/connection';
 import { stores, users } from '../data/schema';
 import { eq } from 'drizzle-orm';
 import path from 'path';
@@ -9,10 +9,8 @@ import {
     getStoreWhatsAppHealth,
     sendWhatsAppMessage, pauseChat, resumeChat, processUnansweredMessage
 } from '../channels/whatsapp-cloud';
-import OpenAI from 'openai';
-// LEGACY Cloudinary: la subida de imágenes ahora usa Supabase Storage (ver /api/upload-images)
+import { testConfiguredModels } from '../bot/agent';
 // import { v2 as cloudinary } from 'cloudinary';
-import { supabase, PRODUCT_IMAGES_BUCKET } from '../config/supabase';
 import { config } from '../config/env';
 import { logger } from '../utils/logger';
 import { getCalendarHealth } from '../utils/calendar-health';
@@ -88,8 +86,8 @@ dashboardRouter.post('/api/users', checkSuperAdmin, async (req: Request, res: Re
 /** DELETE /api/users/:id — eliminar usuario */
 dashboardRouter.delete('/api/users/:id', checkSuperAdmin, async (req: Request, res: Response) => {
     try {
-        await db.delete(users).where(eq(users.id, req.params['id'] as string));
-        res.json({ success: true });
+        // Los usuarios del panel aún no tienen tabla (el acceso es el admin del .env).
+        res.status(501).json({ error: 'La gestión de usuarios del panel no está disponible.' });
     } catch (e: any) {
         res.status(500).json({ error: e.message });
     }
@@ -177,7 +175,7 @@ dashboardRouter.put('/api/stores/:id', async (req: any, res: Response) => {
 dashboardRouter.delete('/api/stores/:id', checkSuperAdmin, async (req: Request, res: Response) => {
     try {
         const id = req.params['id'] as string;
-        await db.delete(stores).where(eq(stores.id, id));
+        if (!deleteLocalStore(id)) return res.status(404).json({ error: 'Tienda no encontrada' });
         res.json({ success: true });
     } catch (e: any) {
         res.status(500).json({ error: e.message });
@@ -240,7 +238,20 @@ dashboardRouter.get('/api/sessions', async (req: any, res: Response) => {
     if (!storeId && !isSuperAdmin(req))
         return res.status(400).json({ error: 'storeId es obligatorio' });
 
-    res.json(await getAllSessions(storeId));
+    // Solo el resumen de cada chat: el panel consulta cada 5 s y el historial completo
+    // de todas las conversaciones agotaría la transferencia gratuita de Supabase.
+    res.json(await getSessionSummaries(storeId));
+});
+
+/** GET /api/sessions/:sessionId — historial completo del chat abierto */
+dashboardRouter.get('/api/sessions/:sessionId', async (req: any, res: Response) => {
+    const sessionId = req.params['sessionId'] as string;
+    if (!isSuperAdmin(req) && !sessionId.startsWith(`${req.user.storeId}_`))
+        return res.status(403).json({ error: 'Prohibido' });
+
+    const detail = await getSessionDetail(sessionId);
+    if (!detail) return res.status(404).json({ error: 'Conversación no encontrada' });
+    res.json(detail);
 });
 
 /** DELETE /api/sessions/:sessionId */
@@ -287,6 +298,8 @@ dashboardRouter.post('/api/resume', async (req: Request, res: Response) => {
         if (!sessionId) return res.status(400).json({ error: 'Falta sessionId' });
 
         await resumeChat(sessionId);
+        // También le quita el chat a la joyería si estaba contestando desde el celular.
+        await clearHumanTakeover(sessionId);
 
         const parts = sessionId.split('_');
         if (parts.length >= 2) {
@@ -304,281 +317,55 @@ dashboardRouter.post('/api/resume', async (req: Request, res: Response) => {
 });
 
 // ─────────────────────────────────────────
-//  IMÁGENES — upload a Supabase Storage
+//  CATÁLOGO — solo lectura
+//  Las piezas y categorías se administran en el panel de la tienda; el bot
+//  las lee de su API pública (ver src/data/catalog.ts).
 // ─────────────────────────────────────────
 
-/**
- * POST /api/upload-images
- * Body: { images: string[], folder?: string }
- *   images → array de data URLs base64 (data:image/...;base64,...)
- *   folder → nombre de carpeta para agrupar imágenes
- * Response: { urls: string[] }
- *
- * Sube al bucket público `productos` de Supabase Storage y devuelve las URLs
- * públicas (mismo formato de respuesta que la versión anterior con Cloudinary).
- */
-dashboardRouter.post('/api/upload-images', async (req: any, res: Response) => {
-    try {
-        const { images, folder } = req.body as { images: string[]; folder?: string };
+const CATALOGO_EN_LA_TIENDA = {
+    error: 'El catálogo se administra en el panel de la tienda.',
+    adminUrl: `${config.SITE_URL.replace(/\/+$/, '')}/admin`,
+};
 
-        if (!Array.isArray(images) || images.length === 0)
-            return res.status(400).json({ error: 'No se enviaron imágenes' });
-
-        if (images.length > 20)
-            return res.status(400).json({ error: 'Máximo 20 imágenes por solicitud' });
-
-        if (!supabase)
-            return res.status(500).json({ error: 'Supabase no está configurado (revisa el .env)' });
-
-        const storage = supabase.storage;
-        const uploadFolder = `propiedades/${folder || 'sin-carpeta'}`;
-
-const urls = await Promise.all(
-            images.map(async (base64, i) => {
-                const match = base64.match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
-                if (!match) throw new Error(`La imagen ${i + 1} no es un data URL válido`);
-
-                const declaredType = match[1];
-                const buffer = Buffer.from(match[2], 'base64');
-                // El frontend normalmente ya convierte a WebP. Si por algún motivo llega
-                // otro formato (navegador sin soporte WebP), respetamos la extensión
-                // declarada para no almacenar archivos corruptos.
-                const ext = declaredType.includes('webp') ? 'webp'
-                    : declaredType.includes('png') ? 'png'
-                    : declaredType.includes('gif') ? 'gif'
-                    : 'jpg';
-                const contentType = ext === 'webp' ? 'image/webp'
-                    : ext === 'png' ? 'image/png'
-                    : ext === 'gif' ? 'image/gif'
-                    : 'image/jpeg';
-                const filePath = `${uploadFolder}/${Date.now()}-${i}.${ext}`;
-
-                const { error } = await storage
-                    .from(PRODUCT_IMAGES_BUCKET)
-                    .upload(filePath, buffer, {
-                        contentType,
-                        upsert: true,
-                    });
-
-                if (error) throw error;
-
-                const { data } = storage
-                    .from(PRODUCT_IMAGES_BUCKET)
-                    .getPublicUrl(filePath);
-
-                return data.publicUrl;
-            })
-        );
-
-        logger.info(`Subidas ${urls.length} imágenes a Supabase Storage en /${uploadFolder}`);
-        res.json({ urls });
-    } catch (e: any) {
-        logger.error('Error subiendo imágenes a Supabase Storage:', e);
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// ─────────────────────────────────────────
-//  CATEGORÍAS
-// ─────────────────────────────────────────
-
-/** GET /api/categorias — listar todas las categorías */
+/** GET /api/categorias — categorías publicadas en la tienda */
 dashboardRouter.get('/api/categorias', async (_req: Request, res: Response) => {
-    try {
-        const sorted = await getAllCategorias();
-        res.json(sorted);
-    } catch (e: any) {
-        res.status(500).json({ error: e.message });
-    }
+    res.json(await getAllCategorias());
 });
 
-/** POST /api/categorias — crear una categoría */
-dashboardRouter.post('/api/categorias', async (req: Request, res: Response) => {
-    try {
-        const { nombre } = req.body;
-        if (!nombre || !nombre.trim()) {
-            return res.status(400).json({ error: 'El nombre es obligatorio' });
-        }
-        const cat = await createCategoria(nombre);
-        if (!cat) {
-            return res.status(500).json({ error: 'Error al crear la categoría' });
-        }
-        res.status(201).json(cat);
-    } catch (e: any) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-/** PUT /api/categorias/:id — renombrar una categoría */
-dashboardRouter.put('/api/categorias/:id', async (req: Request, res: Response) => {
-    try {
-        const { nombre } = req.body;
-        if (!nombre || !nombre.trim()) {
-            return res.status(400).json({ error: 'El nombre es obligatorio' });
-        }
-        const cat = await updateCategoria(req.params['id'] as string, nombre.trim());
-        if (!cat) {
-            return res.status(404).json({ error: 'Categoría no encontrada' });
-        }
-        res.json(cat);
-    } catch (e: any) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-/** DELETE /api/categorias/:id — eliminar categoría (sus productos pasan a 'generales') */
-dashboardRouter.delete('/api/categorias/:id', async (req: Request, res: Response) => {
-    try {
-        const id = req.params['id'] as string;
-        if (id === 'generales') {
-            return res.status(400).json({ error: 'No se puede eliminar la categoría generales' });
-        }
-        const deleted = await deleteCategoria(id);
-        if (!deleted) {
-            return res.status(404).json({ error: 'Categoría no encontrada' });
-        }
-        res.json({ success: true });
-    } catch (e: any) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// ─────────────────────────────────────────
-//  PRODUCTOS  (CRUD)
-// ─────────────────────────────────────────
-
-/** GET /api/products */
+/** GET /api/products — piezas publicadas en la tienda (opcional ?categoriaId=<slug>) */
 dashboardRouter.get('/api/products', async (req: any, res: Response) => {
-    const storeId = isSuperAdmin(req)
-        ? (req.query.storeId as string | undefined)
-        : req.user.storeId;
-
-    if (!storeId && !isSuperAdmin(req))
-        return res.status(400).json({ error: 'storeId es obligatorio' });
-
+    if (req.query.refresh === '1') clearCatalogCache();
     const categoriaId = req.query.categoriaId as string | undefined;
-    const products = await getAllProducts(storeId, categoriaId);
+    const products = await getAllProducts(undefined, categoriaId);
 
     res.json(products.map(p => ({
-        id:               p.id,
-        storeId:          p.storeId,
-        nombre:           p.nombre           || p.name,
-        precio:           p.price,
-        imagen_url:       p.imageUrl,
-        caracteristicas:  p.caracteristicas  || [],
-peso:             p.peso             || 0,
-            stock:            p.stock            || 0,
-            imagenes:         p.imagenes         || [],
-        categoriaId:      p.categoriaId      || 'generales',
+        id:              p.id,
+        nombre:          p.name,
+        precio:          p.price,
+        imagen_url:      p.imageUrl,
+        caracteristicas: p.caracteristicas,
+        peso:            p.peso,
+        stock:           p.stock,
+        imagenes:        p.imagenes,
+        categoriaId:     p.categoriaId,
+        url:             p.url,
     })));
 });
 
-/** POST /api/products — crear producto */
-dashboardRouter.post('/api/products', async (req: any, res: Response) => {
-    try {
-        const storeId = isSuperAdmin(req) ? req.body.storeId : req.user.storeId;
-        if (!storeId) return res.status(400).json({ error: 'storeId es obligatorio' });
-
-        const b = req.body;
-        logger.info(`Creating product with body: ${JSON.stringify(b)}`);
-const product = await createProduct({
-            nombre:           b.nombre,
-            name:             b.nombre,
-            description:      b.caracteristicas?.join(', ') || '',
-            productType:      'joya',
-            price:            Number(b.precio)           || 0,
-            imageUrl:         b.imagen_url               || b.imagenes?.[0] || '',
-            caracteristicas:  b.caracteristicas          || [],
-            peso:             parseFloat(b.peso)           || 0,
-            stock:            parseInt(b.stock)          || 0,
-            imagenes:         b.imagenes                 || [],
-            categoriaId:      b.categoriaId              || 'generales',
-        }, storeId);
-
-        res.status(201).json(product);
-    } catch (e: any) {
-        logger.error(`Error creating product in endpoint: ${e}`);
-        res.status(400).json({ error: e.message });
-    }
-});
-
-/** PUT /api/products/:id — actualizar producto */
-dashboardRouter.put('/api/products/:id', async (req: any, res: Response) => {
-    try {
-        const { id } = req.params;
-        const storeId = isSuperAdmin(req) ? req.body.storeId : req.user.storeId;
-        if (!storeId) return res.status(400).json({ error: 'storeId es obligatorio' });
-
-        const b = req.body;
-        logger.info(`Updating product ${id} with body: ${JSON.stringify(b)}`);
-        const updated = await updateProduct(id, {
-            nombre:           b.nombre,
-            name:             b.nombre,
-            description:      b.caracteristicas?.join(', ') || '',
-            productType:      'joya',
-            price:            Number(b.precio)           || 0,
-            imageUrl:         b.imagen_url               || b.imagenes?.[0] || '',
-            caracteristicas:  b.caracteristicas,
-peso:             b.peso          !== undefined ? parseFloat(b.peso)               : undefined,
-            stock:            b.stock         !== undefined ? parseInt(b.stock)              : undefined,
-            imagenes:         b.imagenes,
-            categoriaId:      b.categoriaId,
-        }, storeId);
-
-        if (!updated) return res.status(404).json({ error: 'Producto no encontrado' });
-        res.json(updated);
-    } catch (e: any) {
-        logger.error(`Error updating product in endpoint: ${e}`);
-        res.status(500).json({ error: e.message });
-    }
-});
-
-/** DELETE /api/products/:id */
-dashboardRouter.delete('/api/products/:id', async (req: any, res: Response) => {
-    try {
-        const { id } = req.params;
-        const storeId = isSuperAdmin(req)
-            ? ((req.query.storeId || req.body.storeId) as string)
-            : req.user.storeId;
-
-        if (!storeId) return res.status(400).json({ error: 'storeId es obligatorio' });
-
-        const deleted = await deleteProduct(id, storeId);
-        if (!deleted) return res.status(404).json({ error: 'Producto no encontrado' });
-        res.json({ success: true });
-    } catch (e: any) {
-        res.status(500).json({ error: e.message });
-    }
-});
+// Escrituras retiradas: crear, editar o borrar desde aquí pisaría el inventario de la tienda.
+for (const route of ['/api/categorias', '/api/categorias/:id', '/api/products', '/api/products/:id', '/api/upload-images']) {
+    dashboardRouter.post(route, (_req: Request, res: Response) => res.status(410).json(CATALOGO_EN_LA_TIENDA));
+    dashboardRouter.put(route, (_req: Request, res: Response) => res.status(410).json(CATALOGO_EN_LA_TIENDA));
+    dashboardRouter.delete(route, (_req: Request, res: Response) => res.status(410).json(CATALOGO_EN_LA_TIENDA));
+}
 
 // ─────────────────────────────────────────
 //  UTILIDADES
 // ─────────────────────────────────────────
 
-/** GET /api/test-models — prueba rápida de modelos disponibles (superadmin) */
+/** GET /api/test-models — prueba rápida de los modelos de IA configurados (superadmin) */
 dashboardRouter.get('/api/test-models', checkSuperAdmin, async (_req: Request, res: Response) => {
-    const models = [
-        'gemini-2.5-flash', 'gemini-2.5-flash-lite',
-        'gemini-2.0-flash', 'gemini-2.0-flash-lite',
-        'gemini-2.5-pro', 'gemma-3-27b-it', 'gemma-3-4b-it',
-    ];
-    const openai = new OpenAI({ apiKey: config.OPENAI_API_KEY, baseURL: config.OPENAI_BASE_URL || undefined });
-    const results: Record<string, string> = {};
-
-    for (const model of models) {
-        try {
-            const r = await openai.chat.completions.create({
-                model,
-                messages: [{ role: 'user', content: 'Responde solo: OK' }],
-                max_tokens: 5,
-            } as any);
-            results[model] = `✅ ${r.choices[0].message.content?.trim()}`;
-        } catch (err: any) {
-            results[model] = `❌ ${err.status ?? ''} ${err.message?.substring(0, 60)}`;
-        }
-    }
-
-    res.json(results);
+    res.json(await testConfiguredModels());
 });
 
 // ─────────────────────────────────────────

@@ -5,8 +5,8 @@ Bot conversacional con IA para atencion al cliente via WhatsApp Cloud API oficia
 ## Requisitos
 
 - **Node.js** >= 18
-- **PostgreSQL** (Supabase recomendado)
-- **Google AI Studio** o proveedor compatible con la API de OpenAI
+- **Base de la tienda** (Supabase) con el esquema `bot` creado (`supabase/002_bot_schema.sql`)
+- **API key de IA**: Anthropic (Claude Haiku) o un proveedor compatible con OpenAI, como DeepSeek (ver `AI_*`)
 - **Cuenta de Meta Developer** (para WhatsApp Cloud API)
 - **Cuenta de Resend** (para notificaciones por email, opcional)
 - **Google Cloud** con Calendar API habilitada (opcional, para agendar citas)
@@ -26,13 +26,10 @@ npm install
 copy .env.example .env
 # Editar .env con tus credenciales reales
 
-# 4. Ejecutar migraciones de base de datos, si aplica
-npx ts-node migrate.ts
-
-# 5. Compilar
+# 4. Compilar
 npm run build
 
-# 6. Iniciar
+# 5. Iniciar
 npm start
 ```
 
@@ -44,12 +41,17 @@ Copia `.env.example` a `.env` y completa **todas** las variables marcadas como R
 
 | Variable | Descripcion |
 |---|---|
-| `OPENAI_API_KEY` | API key del proveedor compatible configurado en `OPENAI_BASE_URL` |
-| `OPENAI_BASE_URL` | URL compatible con la API de OpenAI, por ejemplo Google AI Studio |
-| `SUPABASE_URL` | URL de tu proyecto en Supabase |
-| `SUPABASE_ANON_KEY` | Clave anon/publica de Supabase |
-| `SUPABASE_SERVICE_ROLE_KEY` | (Recomendado) Service role key |
-| `DATABASE_URL` | String de conexion PostgreSQL para migraciones |
+| `AI_PROVIDER` | Formato de la API de IA: `anthropic` (por defecto) u `openai` (DeepSeek y plataformas compatibles) |
+| `AI_API_KEY` | Key del proveedor de IA (también se acepta `ANTHROPIC_API_KEY`) |
+| `AI_API_KEY_2` | (Opcional) Segunda key, si la primera es rechazada o se queda sin cuota |
+| `AI_BASE_URL` | (Opcional) URL de la API; vacía = API oficial. Con otra URL, `AI_MODELS` es obligatorio |
+| `AI_MODELS` | (Opcional) Modelos en orden de preferencia, separados por coma. Por defecto `claude-haiku-5-5,claude-haiku-4-5`. Deben aceptar herramientas e imágenes |
+| `AI_FALLBACK_*` | (Opcional) Proveedor de respaldo: `AI_FALLBACK_PROVIDER`, `AI_FALLBACK_BASE_URL`, `AI_FALLBACK_API_KEY` (y `_2`), `AI_FALLBACK_MODELS`. Se usa si los modelos principales fallan |
+| `BOT_DATABASE_URL` | Conexion al esquema `bot` de la base de la tienda con el rol `bot_joyeria` (ver `supabase/README.md`) |
+| `BOT_DATABASE_CA_PATH` | (Opcional) Certificado de Supabase; por defecto `supabase-ca.crt` en la raiz |
+| `HUMAN_TAKEOVER_HOURS` | (Opcional) Coexistencia: horas que el bot se aparta de un chat cuando la joyeria contesta desde el celular. Default 4 |
+| `BOT_SESSION_RETENTION_DAYS` | (Opcional) Dias sin actividad tras los que se borra un chat (Ley 1581). Default 90; las citas se conservan |
+| `SITE_URL` | (Opcional) Tienda de donde se lee el catalogo. Default `https://www.mr18kts.online` |
 | `META_ACCESS_TOKEN` | Token de WhatsApp Cloud API |
 | `META_PHONE_ID` | Phone Number ID de WhatsApp |
 | `META_WABA_ID` | WhatsApp Business Account ID |
@@ -64,10 +66,11 @@ Copia `.env.example` a `.env` y completa **todas** las variables marcadas como R
 
 | Variable | Default | Descripcion |
 |---|---|---|
-| `WHATSAPP_BATCH_QUIET_MS` | `3000` | Silencio a esperar tras el ultimo mensaje del cliente antes de responder |
-| `WHATSAPP_BATCH_MAX_WAIT_MS` | `10000` | Espera maxima desde el primer mensaje agrupado |
+| `WHATSAPP_BATCH_QUIET_MS` | `1500` | Silencio a esperar tras el ultimo mensaje del cliente antes de responder |
+| `WHATSAPP_BATCH_MAX_WAIT_MS` | `5000` | Espera maxima desde el primer mensaje agrupado |
+| `AI_TIMEOUT_MS` | `25000` | Espera máxima por respuesta de la IA; si se agota, se reintenta una vez |
 | `BOT_MAX_CONCURRENT_CONVERSATIONS` | `5` | Conversaciones procesandose con la IA al mismo tiempo |
-| `BOT_MAX_TEXT_MESSAGES` | `3` | Maximo de mensajes de texto por respuesta |
+| `BOT_MAX_TEXT_MESSAGES` | `2` | Maximo de mensajes de texto por respuesta (y siempre una sola pregunta) |
 | `BOT_MAX_IMAGES` | `3` | Maximo de imagenes por respuesta |
 
 Los mensajes consecutivos de un cliente se agrupan y se envian juntos a la IA. Cada conversacion
@@ -82,22 +85,26 @@ procesan en orden y clientes distintos se atienden en paralelo.
   Meta reporta por webhook). Los registros viven en memoria y se reinician con el servidor.
 - `GET /health` (publico): solo indica que el proceso esta vivo.
 
+### Catalogo
+
+El bot no guarda piezas propias: lee las **publicadas** en la tienda
+(`GET ${SITE_URL}/api/products` y `/api/categorias`), sin credenciales, y las guarda en memoria
+5 minutos (`CATALOG_CACHE_MS`). Si la tienda no responde, sigue usando la ultima copia buena.
+Las piezas, precios, fotos y stock se administran en `${SITE_URL}/admin`; la pestaña Catalogo del
+panel del bot es de solo lectura (boton "Actualizar" para forzar la lectura).
+
 ### Contacto directo desde la web
 
-Cada producto de la tienda pública puede abrir WhatsApp con un mensaje que incluye su `id` como
-referencia. El número del negocio se configura en la propia web:
+El boton "Consultar por WhatsApp" de cada ficha de la tienda envia:
 
-```ts
-const message = `Hola, estoy interesado en el producto "${product.nombre}" (Ref: ${product.id}) que vi en la web. Por favor dame más información.`;
-const whatsappUrl = `https://wa.me/${NUMERO_DEL_NEGOCIO}?text=${encodeURIComponent(message)}`;
+```
+Hola, me interesa la pieza: <titulo>[ en Oro amarillo|blanco|rosa]. ¿Me das más info?
 ```
 
-`src/utils/web-product.ts` expone `buildWebProductMessage()` con el formato exacto (y
-`parseWebProductLead()` para reconocerlo) por si se quiere reutilizar. Cuando el webhook recibe
-ese formato, valida la referencia exacta del producto y responde directamente sin pasar por la IA
-ni hacer búsquedas generales. Si el cliente confirma la pieza, el flujo normal solicita nombre,
-teléfono, fecha y hora; la cita se registra siempre en Pitalito, en Calle 4 #1-31, incluyendo el
-producto de interés.
+`parseWebProductLead()` (`src/utils/web-product.ts`) reconoce ese mensaje (y el formato antiguo con
+`(Ref: id)` y "vi en la web"), busca la pieza por id, slug o nombre exacto y responde directamente sin
+pasar por la IA. Si el cliente confirma la pieza, el flujo normal solicita nombre, telefono, fecha y
+hora; la cita se registra siempre en Pitalito, en Calle 4 #1-31, incluyendo el producto de interes.
 
 Las imagenes del catalogo se guardan en WebP; como WhatsApp solo acepta JPEG/PNG en mensajes de
 imagen, el bot las convierte a JPEG al enviarlas.
@@ -120,9 +127,9 @@ Configura el token del bot directamente en la base de datos (tabla `stores`, col
 src/
   app.ts              # Servidor Express + inicio de bots
   bot/
-    agent.ts          # Agente conversacional OpenAI
+    agent.ts          # Agente conversacional (proveedor de IA configurable)
+    claude.ts         # Traduce el historial guardado al formato de Anthropic
     prompts.ts        # System prompts
-    remarketing.ts    # Motor de remarketing
     tools.ts          # Tools/Functions disponibles para el LLM
   channels/
     telegram.ts       # Integracion Telegram
@@ -131,7 +138,7 @@ src/
     env.ts            # Carga y validacion de .env
     supabase.ts       # Cliente de Supabase
   data/
-    catalog.ts        # Busqueda de productos en Supabase
+    catalog.ts        # Catalogo leido de la API publica de la tienda (solo lectura, con cache)
     connection.ts     # Conexion Drizzle ORM
     database.ts       # Gestion de sesiones y citas
     schema.ts         # Esquema de base de datos (Drizzle)
@@ -169,7 +176,7 @@ solucion de problemas).
 ## Tecnologias
 
 - TypeScript, Node.js, Express
-- OpenAI API (GPT-4o-mini)
+- IA configurable: Claude API (Anthropic) o API compatible con OpenAI (DeepSeek)
 - Supabase (PostgreSQL + Storage)
 - Drizzle ORM
 - WhatsApp Cloud API oficial

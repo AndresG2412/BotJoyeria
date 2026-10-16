@@ -10,16 +10,34 @@ import { logger } from './utils/logger';
 import { whatsappRouter, initializeWhatsAppCloud } from './channels/whatsapp-cloud';
 import { initializeTelegramClients, stopTelegramBot } from './channels/telegram';
 import { dashboardRouter } from './routes/dashboard';
+import { adminApiRouter } from './routes/admin-api';
 import path from 'path';
 import { eq } from 'drizzle-orm';
-import { initializeSupabase } from './config/supabase';
+import { initializeDatabase } from './data/pool';
+import { purgeInactiveSessions } from './data/database';
 import { db } from './data/connection';
 import { users, stores } from './data/schema';
+
+/** Comparación en tiempo constante para no filtrar la contraseña por tiempos de respuesta. */
+function safeEqual(a: unknown, b: string): boolean {
+    const left = crypto.createHash('sha256').update(String(a ?? '')).digest();
+    const right = crypto.createHash('sha256').update(b).digest();
+    return crypto.timingSafeEqual(left, right);
+}
 
 function bootstrap() {
     logger.info(`Iniciando AI Bot para Ecommerce: ${config.STORE_NAME}`);
 
-    initializeSupabase();
+    void initializeDatabase().then(async connected => {
+        if (!connected) return;
+        // Ley 1581: los chats sin actividad se borran pasado el plazo (al arrancar y cada 6 h).
+        const purge = async () => {
+            const deleted = await purgeInactiveSessions(config.BOT_SESSION_RETENTION_DAYS);
+            if (deleted > 0) logger.info(`Chats borrados por inactividad (> ${config.BOT_SESSION_RETENTION_DAYS} días): ${deleted}`);
+        };
+        await purge();
+        setInterval(purge, 6 * 60 * 60 * 1000).unref();
+    });
 
     const app = express();
 
@@ -84,7 +102,7 @@ function bootstrap() {
             }
 
             // Fallback a superadmin del .env si la tabla está vacía o es admin root
-            if (username === config.DASHBOARD_USER && password === config.DASHBOARD_PASSWORD) {
+            if (config.DASHBOARD_PASSWORD && safeEqual(username, config.DASHBOARD_USER) && safeEqual(password, config.DASHBOARD_PASSWORD)) {
                 const token = jwt.sign({ user: username, role: 'superadmin', storeId: null }, config.JWT_SECRET, { expiresIn: '24h' });
                 res.cookie('auth_token', token, {
                     httpOnly: true,
@@ -138,6 +156,9 @@ function bootstrap() {
 
     // Rutear las peticiones de WhatsApp (Webhooks suelen ser públicos o validados internamente)
     app.use('/webhook/whatsapp', whatsappRouter);
+
+    // Chats para el admin de la tienda (servidor a servidor, con BOT_ADMIN_API_TOKEN).
+    app.use('/admin-api', rateLimit({ windowMs: 60 * 1000, max: 240 }), adminApiRouter);
 
     // Archivos estáticos públicos (CSS, Login, etc)
     app.use(express.static(path.join(__dirname, '../public')));

@@ -148,9 +148,12 @@
                         <h2><i class="ph ph-package" style="vertical-align:middle;margin-right:6px;"></i> Catálogo</h2>
                     </div>
                     <div style="display:flex;gap:8px;">
-                        <button class="btn-primary" onclick="openProductModal()">
-                            <i class="ph ph-plus-circle"></i> Agregar Producto
+                        <button class="btn-sm" onclick="refreshCatalog()" title="Volver a leer la tienda">
+                            <i class="ph ph-arrows-clockwise"></i> Actualizar
                         </button>
+                        <a class="btn-primary" href="https://www.mr18kts.online/admin/collections/products" target="_blank" rel="noopener" style="text-decoration:none;">
+                            <i class="ph ph-arrow-square-out"></i> Administrar en la tienda
+                        </a>
                     </div>
                 </div>
                 <div class="categories-tabs-container" id="categoriesTabs" style="display:flex;gap:8px;padding:12px 24px;border-bottom:1px solid var(--border);overflow-x:auto;">
@@ -459,9 +462,8 @@
         }
 
         allSessions.forEach(s => {
-            const history = Array.isArray(s.history) ? s.history : [];
-            const last = history.slice().reverse().find(m => m.role === 'user' || m.role === 'assistant');
-            let preview = last ? (typeof last.content === 'string' ? last.content : 'Envió un mensaje') : '—';
+            const last = s.lastMessage;
+            let preview = last ? (last.content || 'Envió un mensaje') : '—';
             if (preview.length > 40) preview = preview.substring(0, 40) + '…';
             const ic = `<div class="top"><span class="phone">${escapeHTML(cleanPhone(s.sessionId))}</span><span class="time">${formatTime(s.updatedAt)}</span></div><div class="preview">${last?.role==='assistant'?'<i class="ph ph-robot" style="color:var(--brand);margin-right:4px;vertical-align:middle;"></i>':''}${escapeHTML(preview)}</div>`;
             const hash = preview + '|' + (s.updatedAt || '');
@@ -479,10 +481,20 @@
             }
         });
 
+        // El historial completo solo se pide para el chat abierto, y solo si cambió.
         if (activeSessionId) {
             const current = allSessions.find(x => x.sessionId === activeSessionId);
-            if (current) renderActiveChat(current);
+            const stamp = current ? current.updatedAt + '|' + current.isPaused + '|' + (current.humanUntil || '') : '';
+            if (current && stamp !== _activeStamp) loadActiveChat(activeSessionId, stamp);
         }
+    }
+
+    let _activeStamp = '';
+    async function loadActiveChat(sid, stamp) {
+        _activeStamp = stamp || '';
+        const res = await safeFetch(`/dashboard/api/sessions/${encodeURIComponent(sid)}`);
+        if (!res || !res.ok || activeSessionId !== sid) return;
+        renderActiveChat(await res.json());
     }
 
     function selectSession(sid) {
@@ -491,14 +503,15 @@
             el.classList.toggle('active', el.getAttribute('data-phone') === sid);
         });
         const s = allSessions.find(x => x.sessionId === sid);
-        if (s) renderActiveChat(s);
+        if (s) loadActiveChat(sid, s.updatedAt + '|' + s.isPaused + '|' + (s.humanUntil || ''));
     }
 
     let _lastChatHash = '';
     function renderActiveChat(s) {
         const history = Array.isArray(s.history) ? s.history : [];
         const isPaused = !!s.isPaused;
-        const chatHash = s.sessionId + '|' + history.length + '|' + isPaused + '|' + JSON.stringify(history[history.length-1]?.content||'').substring(0,50);
+        const humanUntil = s.humanUntil && new Date(s.humanUntil) > new Date() ? new Date(s.humanUntil) : null;
+        const chatHash = s.sessionId + '|' + history.length + '|' + isPaused + '|' + (humanUntil ? humanUntil.getTime() : '') + '|' + JSON.stringify(history[history.length-1]?.content||'').substring(0,50);
         if (_lastChatHash === chatHash) return;
         _lastChatHash = chatHash;
 
@@ -512,7 +525,11 @@
 
         const statusEl  = document.getElementById('chatStatusText');
         const btnToggle = document.getElementById('btnToggleBot');
-        if (isPaused) {
+        if (humanUntil) {
+            const hasta = humanUntil.toLocaleTimeString('es-CO', { hour: 'numeric', minute: '2-digit' });
+            statusEl.innerHTML = `<span class="dot" style="background:var(--yellow);"></span> La joyería contesta desde el celular — el bot vuelve a las ${escapeHTML(hasta)}`;
+            btnToggle.style.display = 'flex';
+        } else if (isPaused) {
             statusEl.innerHTML = '<span class="dot" style="background:var(--yellow);"></span> Bot Pausado — respondiendo tú';
             btnToggle.style.display = 'flex';
         } else {
@@ -558,7 +575,7 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ sessionId: activeSessionId, message, phone, storeId })
         });
-        if (res) { _lastChatHash = ''; await loadSessions(); }
+        if (res) { _lastChatHash = ''; _activeStamp = ''; await loadSessions(); }
         else alert('Error enviando mensaje');
     }
 
@@ -569,7 +586,7 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ sessionId: activeSessionId })
         });
-        if (res && res.ok) { _lastChatHash = ''; await loadSessions(); }
+        if (res && res.ok) { _lastChatHash = ''; _activeStamp = ''; await loadSessions(); }
         else alert('Error reactivando bot');
     }
 
@@ -580,6 +597,7 @@
         if (res && res.ok) {
             activeSessionId = null;
             _lastChatHash = '';
+            _activeStamp = '';
             document.getElementById('chatHeader').style.display    = 'none';
             document.getElementById('chatMessages').style.display  = 'none';
             document.getElementById('chatInputArea').style.display = 'none';
@@ -591,6 +609,14 @@
     // ═══════════════════════════════════════
     //  PRODUCTS
     // ═══════════════════════════════════════
+    async function refreshCatalog() {
+        const res = await safeFetch('/dashboard/api/products?refresh=1');
+        if (!res) return;
+        await loadCategorias();
+        await loadProducts();
+        showToast('Catálogo actualizado desde la tienda', 'success');
+    }
+
     async function loadProducts() {
         const url = activeCategoriaId ? `/dashboard/api/products?categoriaId=${encodeURIComponent(activeCategoriaId)}` : '/dashboard/api/products';
         const res = await safeFetch(url);
@@ -704,14 +730,16 @@
         const grid = document.getElementById('productsGrid');
         grid.innerHTML = '';
         if (allProducts.length === 0) {
-            grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;padding:60px;"><div class="empty-icon"><i class="ph ph-package"></i></div><h3>Sin productos</h3><p>Agrega tu primer producto con el botón de arriba.</p></div>';
+            grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;padding:60px;"><div class="empty-icon"><i class="ph ph-package"></i></div><h3>Sin piezas publicadas</h3><p>El bot muestra las piezas publicadas en la tienda. Cárgalas desde el panel de la tienda.</p></div>';
             return;
         }
         allProducts.forEach(p => {
             const card = document.createElement('div');
             card.className = 'product-card';
             card.style.cssText = 'padding:0;overflow:hidden;display:grid;grid-template-columns:140px 1fr;min-height:110px;';
-            const priceStr = new Intl.NumberFormat('es-CO', { style:'currency', currency:'COP', maximumFractionDigits:0 }).format(p.precio);
+            const priceStr = p.precio > 0
+                ? new Intl.NumberFormat('es-CO', { style:'currency', currency:'COP', maximumFractionDigits:0 }).format(p.precio)
+                : 'Precio a consultar';
             const firstPhoto = (Array.isArray(p.imagenes) && p.imagenes.length > 0) ? p.imagenes[0] : (p.imagen_url || '');
             const imgHTML = firstPhoto
                 ? `<img src="${escapeHTML(firstPhoto)}" alt="${escapeHTML(p.nombre)}" style="width:140px;height:100%;object-fit:cover;display:block;">`
@@ -729,12 +757,10 @@
                         </div>
                     </div>
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;align-self:end;">
-                        <button class="btn-sm btn-edit" style="justify-content:center;"><i class="ph ph-pencil-simple"></i> Editar</button>
-                        <button class="btn-sm danger btn-delete" style="justify-content:center;"><i class="ph ph-trash"></i> Eliminar</button>
+                        <span style="font-size:11px;color:var(--text3);align-self:center;">${p.stock > 0 ? `${p.stock} disponible(s)` : 'Bajo pedido'}</span>
+                        <a class="btn-sm" style="justify-content:center;text-decoration:none;" href="${escapeHTML(p.url || '#')}" target="_blank" rel="noopener"><i class="ph ph-arrow-square-out"></i> Ver en la tienda</a>
                     </div>
                 </div>`;
-            card.querySelector('.btn-edit').onclick   = () => editProduct(p.id);
-            card.querySelector('.btn-delete').onclick = () => confirmDelete(p.id, p.nombre);
             grid.appendChild(card);
         });
     }
