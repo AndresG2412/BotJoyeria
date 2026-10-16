@@ -408,6 +408,12 @@ export function keepFirstQuestion(messages: string[]): string[] {
  * Limita la cantidad de mensajes por respuesta sin perder contenido:
  * lo que sobra se une al último mensaje permitido.
  */
+/** La respuesta le promete al cliente que le van a mandar la cotización (para no perder el aviso). */
+export function promisesQuote(text: string): boolean {
+    return /cotizaci[oó]n/i.test(text)
+        && /\b(te|le)\s+(enviar|mandar|pasar|escribir|preparar|har)[áa]n?(?![a-zñ])/i.test(text);
+}
+
 function capMessages(messages: string[], max: number): string[] {
     if (messages.length <= max) return messages;
     return [...messages.slice(0, max - 1), messages.slice(max - 1).join('\n\n')];
@@ -670,6 +676,39 @@ async function processUserMessage(
             } catch (forceErr: any) {
                 logger.error(`Reintento forzado fallido: ${forceErr.message}`);
                 finalContent = 'Perdona, tuve un problema técnico al registrar tu cita. ¿Me confirmas de nuevo el día, la hora y tu nombre completo?';
+            }
+        }
+
+        // ── Cotización prometida sin avisar al equipo: se fuerza request_quote una vez ──
+        const quoteWasCalled = history.some(
+            m => m.role === 'assistant' &&
+            Array.isArray((m as any).tool_calls) &&
+            (m as any).tool_calls.some((tc: any) => tc.function?.name === 'request_quote')
+        );
+        if (promisesQuote(finalContent) && !quoteWasCalled) {
+            logger.warn(`Sesión ${sessionId}: modelo prometió cotización sin invocar request_quote. Reintentando con tool_choice forzado.`);
+            try {
+                const forcedMsg = await createWithCascade(
+                    MODEL_CASCADE,
+                    {
+                        messages: toModel(history),
+                        tools: botTools,
+                        tool_choice: { type: 'function', function: { name: 'request_quote' } },
+                    }
+                );
+                const tc = forcedMsg.tool_calls?.[0];
+                if (tc) {
+                    history.push({ ...forcedMsg, tool_calls: [tc] } as OpenAI.Chat.ChatCompletionMessageParam);
+                    const result = await executeTool(
+                        tc.function.name,
+                        JSON.parse(tc.function.arguments),
+                        storeId, senderPhone, sessionId,
+                        enrichedSystemPrompt, adminCalendarEmail, pqrEmail
+                    );
+                    history.push({ role: 'tool', tool_call_id: tc.id, content: result });
+                }
+            } catch (forceErr: any) {
+                logger.error(`Aviso de cotización forzado fallido: ${forceErr.message}`);
             }
         }
 
