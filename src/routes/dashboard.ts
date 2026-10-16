@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { getSessionSummaries, getSessionDetail, deleteSession, getMemory, saveMemory, clearHumanTakeover } from '../data/database';
+import { getSession, getSessionSummaries, getSessionDetail, deleteSession, getMemory, saveMemory, clearHumanTakeover } from '../data/database';
 import { getAllProducts, getAllCategorias, clearCatalogCache } from '../data/catalog';
 import { db, deleteLocalStore } from '../data/connection';
 import { stores, users } from '../data/schema';
@@ -10,10 +10,8 @@ import {
     sendWhatsAppMessage, pauseChat, resumeChat, processUnansweredMessage
 } from '../channels/whatsapp-cloud';
 import { testConfiguredModels } from '../bot/agent';
-// import { v2 as cloudinary } from 'cloudinary';
 import { config } from '../config/env';
 import { logger } from '../utils/logger';
-import crypto from 'crypto';
 import { DEFAULT_STORE_SYSTEM_PROMPT } from '../bot/prompts';
 
 export const dashboardRouter = Router();
@@ -23,6 +21,16 @@ export const dashboardRouter = Router();
 // ─────────────────────────────────────────
 const isSuperAdmin = (req: any): boolean =>
     req.user?.role === 'superadmin' || req.user?.user === config.DASHBOARD_USER;
+
+/** Un dueño de tienda solo toca los chats de su tienda (el id del chat empieza por el de la tienda). */
+const ownsSession = (req: any, sessionId: string): boolean =>
+    isSuperAdmin(req) || (!!req.user?.storeId && sessionId.startsWith(`${req.user.storeId}_`));
+
+/** Error para el navegador sin detalles internos; el detalle queda en el log. */
+const serverError = (res: Response, e: any) => {
+    logger.error(`Error en el panel: ${e?.message || e}`);
+    res.status(500).json({ error: 'Error interno' });
+};
 
 const checkSuperAdmin = (req: any, res: Response, next: any) => {
     if (!isSuperAdmin(req)) return res.status(403).json({ error: 'Prohibido: Solo superadmin' });
@@ -56,30 +64,14 @@ dashboardRouter.get('/api/users', checkSuperAdmin, async (_req: Request, res: Re
         }).from(users);
         res.json(allUsers);
     } catch (e: any) {
-        res.status(500).json({ error: e.message });
+        serverError(res, e);
     }
 });
 
 /** POST /api/users — crear usuario */
-dashboardRouter.post('/api/users', checkSuperAdmin, async (req: Request, res: Response) => {
-    try {
-        const { username, password, storeId, role } = req.body;
-        if (!username || !password)
-            return res.status(400).json({ error: 'Usuario y contraseña obligatorios' });
-
-        const passwordHash = crypto.createHash('sha256').update(password).digest('hex');
-        const [user] = await db.insert(users).values({
-            id: Date.now().toString(),
-            username,
-            passwordHash,
-            storeId: storeId || null,
-            role:    role || 'store_owner',
-        }).returning();
-
-        res.status(201).json({ id: user.id, username: user.username, role: user.role });
-    } catch (e: any) {
-        res.status(400).json({ error: e.message });
-    }
+dashboardRouter.post('/api/users', checkSuperAdmin, (_req: Request, res: Response) => {
+    // Los usuarios del panel aún no tienen tabla (el acceso es el admin del .env).
+    res.status(501).json({ error: 'La gestión de usuarios del panel no está disponible.' });
 });
 
 /** DELETE /api/users/:id — eliminar usuario */
@@ -88,7 +80,7 @@ dashboardRouter.delete('/api/users/:id', checkSuperAdmin, async (req: Request, r
         // Los usuarios del panel aún no tienen tabla (el acceso es el admin del .env).
         res.status(501).json({ error: 'La gestión de usuarios del panel no está disponible.' });
     } catch (e: any) {
-        res.status(500).json({ error: e.message });
+        serverError(res, e);
     }
 });
 
@@ -104,7 +96,7 @@ dashboardRouter.get('/api/stores', async (req: any, res: Response) => {
             : await db.query.stores.findMany({ where: eq(stores.id, req.user.storeId) });
         res.json(result);
     } catch (e: any) {
-        res.status(500).json({ error: e.message });
+        serverError(res, e);
     }
 });
 
@@ -128,7 +120,7 @@ dashboardRouter.post('/api/stores', checkSuperAdmin, async (req: Request, res: R
 
         res.status(201).json(store);
     } catch (e: any) {
-        res.status(400).json({ error: e.message });
+        serverError(res, e);
     }
 });
 
@@ -166,7 +158,7 @@ dashboardRouter.put('/api/stores/:id', async (req: any, res: Response) => {
         if (!updated) return res.status(404).json({ error: 'Tienda no encontrada' });
         res.json(updated);
     } catch (e: any) {
-        res.status(400).json({ error: e.message });
+        serverError(res, e);
     }
 });
 
@@ -177,7 +169,7 @@ dashboardRouter.delete('/api/stores/:id', checkSuperAdmin, async (req: Request, 
         if (!deleteLocalStore(id)) return res.status(404).json({ error: 'Tienda no encontrada' });
         res.json({ success: true });
     } catch (e: any) {
-        res.status(500).json({ error: e.message });
+        serverError(res, e);
     }
 });
 
@@ -198,7 +190,7 @@ dashboardRouter.get('/api/whatsapp/health/:storeId', async (req: any, res: Respo
     try {
         res.json(await getStoreWhatsAppHealth(storeId));
     } catch (e: any) {
-        res.status(500).json({ error: e.message });
+        serverError(res, e);
     }
 });
 
@@ -234,37 +226,40 @@ dashboardRouter.get('/api/sessions/:sessionId', async (req: any, res: Response) 
 /** DELETE /api/sessions/:sessionId */
 dashboardRouter.delete('/api/sessions/:sessionId', async (req: Request, res: Response) => {
     try {
-        await deleteSession(req.params['sessionId'] as string);
+        const sessionId = req.params['sessionId'] as string;
+        if (!ownsSession(req, sessionId)) return res.status(403).json({ error: 'Prohibido' });
+        await deleteSession(sessionId);
         res.json({ success: true });
     } catch (e: any) {
-        res.status(500).json({ error: e.message });
+        serverError(res, e);
     }
 });
 
-/** POST /api/reply — respuesta humana desde el panel */
+/** POST /api/reply — respuesta humana desde el panel. El destino sale del chat guardado, nunca de la petición. */
 dashboardRouter.post('/api/reply', async (req: any, res: Response) => {
     try {
-        const { sessionId, message, phone } = req.body;
-        const storeId = isSuperAdmin(req) ? req.body.storeId : req.user.storeId;
+        const { sessionId, message } = req.body;
+        if (typeof sessionId !== 'string' || typeof message !== 'string' || !message.trim())
+            return res.status(400).json({ error: 'Falta el chat o el mensaje' });
+        if (!ownsSession(req, sessionId)) return res.status(403).json({ error: 'Prohibido' });
 
-        if (!phone || !message || !storeId)
-            return res.status(400).json({ error: 'Falta teléfono, mensaje o storeId' });
+        const session: any = await getSession(sessionId);
+        if (!session?.senderPhone || !session?.storeId)
+            return res.status(404).json({ error: 'Conversación no encontrada' });
 
-        if (sessionId) {
-            await pauseChat(sessionId);
-            try {
-                const history = await getMemory(sessionId);
-                history.push({ role: 'assistant', content: message });
-                await saveMemory(sessionId, storeId, phone, history);
-            } catch (e: any) {
-                logger.error(`Error guardando mensaje de admin: ${e.message}`);
-            }
+        await pauseChat(sessionId);
+        try {
+            const history = await getMemory(sessionId);
+            history.push({ role: 'assistant', content: message });
+            await saveMemory(sessionId, session.storeId, session.senderPhone, history);
+        } catch (e: any) {
+            logger.error(`Error guardando mensaje de admin: ${e.message}`);
         }
 
-        await sendWhatsAppMessage(storeId, phone, message);
+        await sendWhatsAppMessage(session.storeId, session.senderPhone, message);
         res.json({ success: true, botPaused: true });
     } catch (e: any) {
-        res.status(500).json({ error: e.message });
+        serverError(res, e);
     }
 });
 
@@ -272,24 +267,23 @@ dashboardRouter.post('/api/reply', async (req: any, res: Response) => {
 dashboardRouter.post('/api/resume', async (req: Request, res: Response) => {
     try {
         const { sessionId } = req.body;
-        if (!sessionId) return res.status(400).json({ error: 'Falta sessionId' });
+        if (typeof sessionId !== 'string' || !sessionId) return res.status(400).json({ error: 'Falta sessionId' });
+        if (!ownsSession(req, sessionId)) return res.status(403).json({ error: 'Prohibido' });
 
         await resumeChat(sessionId);
         // También le quita el chat a la joyería si estaba contestando desde el celular.
         await clearHumanTakeover(sessionId);
 
-        const parts = sessionId.split('_');
-        if (parts.length >= 2) {
-            const [storeId, ...rest] = parts;
-            const phone = rest.join('_');
-            processUnansweredMessage(sessionId, storeId, phone).catch(err =>
+        const session: any = await getSession(sessionId);
+        if (session?.storeId && session?.senderPhone) {
+            processUnansweredMessage(sessionId, session.storeId, session.senderPhone).catch(err =>
                 logger.error(`Error en processUnansweredMessage: ${err.message}`)
             );
         }
 
         res.json({ success: true, botResumed: true });
     } catch (e: any) {
-        res.status(500).json({ error: e.message });
+        serverError(res, e);
     }
 });
 

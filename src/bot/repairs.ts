@@ -50,7 +50,10 @@ export function normalizeDocument(value: unknown): string | null {
 
 /** Celular colombiano del remitente (10 dígitos), o null si escribe con un identificador que no es teléfono. */
 export function senderMobile(senderPhone: string): string | null {
-    const digits = (senderPhone || '').replace(/\D/g, '');
+    // WhatsApp entrega el número solo en dígitos; un identificador con letras o prefijo
+    // (BSUID, Telegram) no es un teléfono que Meta certifique.
+    if (!/^\d+$/.test(senderPhone || '')) return null;
+    const digits = senderPhone;
     const local = digits.startsWith('57') && digits.length === 12 ? digits.slice(2) : digits;
     return /^3\d{9}$/.test(local) ? local : null;
 }

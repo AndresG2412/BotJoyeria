@@ -516,7 +516,8 @@
                 div.textContent = content;
             } else if (m.role === 'assistant' && m.tool_calls) {
                 div.classList.add('tool-msg');
-                div.innerHTML = '<i class="ph ph-gear" style="animation:spin 1s linear infinite"></i> ' + m.tool_calls[0].function.name;
+                div.innerHTML = '<i class="ph ph-gear" style="animation:spin 1s linear infinite"></i> ';
+                div.append(String(m.tool_calls[0]?.function?.name || ''));
             } else if (m.role === 'tool') {
                 div.classList.add('tool-msg');
                 div.innerHTML = '<i class="ph ph-check-circle" style="color:var(--brand)"></i> Resultado recibido';
@@ -532,13 +533,10 @@
         const message = input.value.trim();
         if (!message) return;
         input.value = '';
-        const parts   = activeSessionId.split('_');
-        const storeId = parts[0];
-        const phone   = parts.length > 1 ? parts.slice(1).join('_') : activeSessionId;
         const res = await safeFetch('/dashboard/api/reply', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId: activeSessionId, message, phone, storeId })
+            body: JSON.stringify({ sessionId: activeSessionId, message })
         });
         if (res) { _lastChatHash = ''; _activeStamp = ''; await loadSessions(); }
         else alert('Error enviando mensaje');
