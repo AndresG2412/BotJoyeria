@@ -5,10 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Panel de Control - Bot de Tienda</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <!-- Versión fija y con integrity: si el CDN cambia el archivo, el navegador no lo carga. -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.2/src/regular/style.css" integrity="sha384-6p9AefaqUhEVheRlj1mpAkbngHXy9mbYMrIdcIt4Jlc9lOLIablJq3bBsLOjGwZ7" crossorigin="anonymous">
     <link rel="stylesheet" href="styles.css">
-    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css">
-    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
+    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/toastify-js@1.12.0/src/toastify.min.css" integrity="sha384-GSJP6bR4yv1SbLGhL+ntxb4LDi6RC5j8eM8OAh5lwPYdvj9cflIWJiFZdAFr2gyP" crossorigin="anonymous">
+    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/toastify-js@1.12.0/src/toastify.min.js" integrity="sha384-HV48j9xMNfX80v1dhiML90VeD4a38xrehnBK+dNSSe8P4fija/zP36u52q7TpB6O" crossorigin="anonymous"></script>
     <style>
         @keyframes spin { from { transform: rotate(0) } to { transform: rotate(360deg) } }
         .uploading-preview {
@@ -510,7 +511,7 @@
             if (m.role === 'user') {
                 div.classList.add('user');
                 if (Array.isArray(m.content)) { const tp = m.content.find(c => c.type==='text'); content = tp?.text||''; }
-                div.textContent = content || 'Sent a message';
+                div.textContent = content || 'Envió una foto o un archivo';
             } else if (m.role === 'assistant' && !m.tool_calls) {
                 div.classList.add('assistant');
                 div.textContent = content;
