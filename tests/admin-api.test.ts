@@ -40,3 +40,39 @@ test('el chat que ve el admin no trae instrucciones ni llamadas internas de la I
         { role: 'assistant', content: 'Tu anillo está listo para recoger.' },
     ]);
 });
+
+test('un mensaje con foto trae su identificador y como texto solo el pie de foto', async () => {
+    const { toReadableMessages } = await import('../src/routes/admin-api');
+    const history = [
+        { role: 'user', content: '[El cliente envió una foto] ¿Tienen algo así?', photoMediaId: '1234567890123' },
+        { role: 'user', content: '[El cliente envió una foto]', photoMediaId: '9876543210987' },
+        // Fotos de antes de guardar el identificador: solo el texto.
+        { role: 'user', content: '[El cliente envió una foto]' },
+        // Un identificador raro no se ofrece.
+        { role: 'user', content: '[El cliente envió una foto] hola', photoMediaId: '../../me' },
+    ];
+    assert.deepEqual(toReadableMessages(history), [
+        { role: 'user', content: '¿Tienen algo así?', photoId: '1234567890123' },
+        { role: 'user', content: '', photoId: '9876543210987' },
+        { role: 'user', content: '[El cliente envió una foto]' },
+        { role: 'user', content: '[El cliente envió una foto] hola' },
+    ]);
+});
+
+test('solo se entregan fotos que pertenecen a ese chat', async () => {
+    const { chatHasPhoto } = await import('../src/routes/admin-api');
+    const history = [{ role: 'user', content: '[El cliente envió una foto]', photoMediaId: '1234567890123' }];
+    assert.equal(chatHasPhoto(history, '1234567890123'), true);
+    assert.equal(chatHasPhoto(history, '5555555555555'), false, 'foto de otro chat');
+    assert.equal(chatHasPhoto(history, 'me?fields=x'), false, 'no deja colar otra ruta de Graph');
+});
+
+test('la IA nunca recibe el identificador de la foto', async () => {
+    const { messagesForModel } = await import('../src/bot/agent');
+    const conFoto: any = { role: 'user', content: '[El cliente envió una foto] mira', photoMediaId: '1234567890123' };
+    const anterior: any = { role: 'user', content: '[El cliente envió una foto]', photoMediaId: '9876543210987' };
+    const salida = messagesForModel([anterior, conFoto], conFoto, { mimetype: 'image/jpeg', data: 'AAAA', mediaId: '1234567890123' });
+    assert.equal(JSON.stringify(salida).includes('1234567890123'), false);
+    assert.equal(JSON.stringify(salida).includes('9876543210987'), false);
+    assert.equal(Array.isArray(salida[1].content), true, 'la foto de este turno sí viaja a la IA');
+});

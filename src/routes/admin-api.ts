@@ -3,7 +3,8 @@ import { NextFunction, Request, Response, Router } from 'express';
 import { config } from '../config/env';
 import { logger } from '../utils/logger';
 import { getSession, getSessionDetail, getSessionSummaries, getMemory, saveMemory, clearHumanTakeover } from '../data/database';
-import { pauseChat, processUnansweredMessage, resumeChat, sendWhatsAppMessage } from '../channels/whatsapp-cloud';
+import { fetchCustomerPhotoForAdmin, pauseChat, processUnansweredMessage, resumeChat, sendWhatsAppMessage } from '../channels/whatsapp-cloud';
+import { PHOTO_MEDIA_ID_FIELD } from '../bot/agent';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  API servidor a servidor para el admin de la tienda (Mostrador → WhatsApp)
@@ -39,9 +40,20 @@ export function requireAdminToken(req: Request, res: Response, next: NextFunctio
 
 adminApiRouter.use(requireAdminToken);
 
-/** Solo lo que una persona lee en un chat: sin instrucciones ni llamadas internas de la IA. */
-export function toReadableMessages(history: any[]): Array<{ role: 'user' | 'assistant'; content: string }> {
-    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+export type ReadableMessage = { role: 'user' | 'assistant'; content: string; photoId?: string };
+
+/** El identificador de una foto de WhatsApp: solo dígitos (así nadie cuela otra ruta de Graph). */
+const MEDIA_ID = /^\d{5,32}$/;
+
+/** El texto que deja el bot en lugar de la foto (src/bot/agent.ts, photoPlaceholder). */
+const PHOTO_PLACEHOLDER = /^\[El cliente envió una foto\]\s*/;
+
+/**
+ * Solo lo que una persona lee en un chat: sin instrucciones ni llamadas internas de la IA.
+ * Un mensaje con foto trae `photoId` (el panel la pide aparte) y como texto solo su pie de foto.
+ */
+export function toReadableMessages(history: any[]): ReadableMessage[] {
+    const messages: ReadableMessage[] = [];
     for (const message of Array.isArray(history) ? history : []) {
         if (message?.role !== 'user' && message?.role !== 'assistant') continue;
         let content = '';
@@ -52,10 +64,19 @@ export function toReadableMessages(history: any[]): Array<{ role: 'user' | 'assi
             const hasImage = message.content.some((p: any) => p?.type === 'image_url' || p?.type === 'image');
             content = [hasImage ? '[Foto]' : '', text].filter(Boolean).join(' ');
         }
-        content = content.trim();
-        if (content) messages.push({ role: message.role, content });
+        const photoId = typeof message[PHOTO_MEDIA_ID_FIELD] === 'string' && MEDIA_ID.test(message[PHOTO_MEDIA_ID_FIELD])
+            ? message[PHOTO_MEDIA_ID_FIELD]
+            : undefined;
+        content = (photoId ? content.replace(PHOTO_PLACEHOLDER, '') : content).trim();
+        if (photoId) messages.push({ role: message.role, content, photoId });
+        else if (content) messages.push({ role: message.role, content });
     }
     return messages;
+}
+
+/** ¿Esa foto es de ESE chat? El admin no puede pedir cualquier foto de la cuenta de WhatsApp. */
+export function chatHasPhoto(history: any[], mediaId: string): boolean {
+    return MEDIA_ID.test(mediaId) && (Array.isArray(history) ? history : []).some(m => m?.[PHOTO_MEDIA_ID_FIELD] === mediaId);
 }
 
 function readableError(error: any): string {
@@ -123,6 +144,29 @@ adminApiRouter.post('/sessions/:sessionId/reply', async (req: Request, res: Resp
     const author = typeof req.body?.author === 'string' ? req.body.author.slice(0, 80) : 'desconocido';
     logger.info(`Admin de la tienda: ${author} respondió en ${sessionId}`);
     res.json({ success: true, botPaused: true });
+});
+
+/**
+ * GET /admin-api/sessions/:sessionId/photos/:mediaId — la foto que mandó el cliente, descargada
+ * de WhatsApp en el momento. No se guarda en ningún lado; WhatsApp la conserva un tiempo limitado.
+ */
+adminApiRouter.get('/sessions/:sessionId/photos/:mediaId', async (req: Request, res: Response) => {
+    const sessionId = String(req.params['sessionId']);
+    const mediaId = String(req.params['mediaId']);
+    const session: any = await getSession(sessionId);
+    if (!session?.sessionId || !chatHasPhoto(await getMemory(sessionId), mediaId)) {
+        return res.status(404).json({ error: 'Foto no encontrada en esta conversación' });
+    }
+    try {
+        const jpeg = await fetchCustomerPhotoForAdmin(session.storeId, mediaId);
+        res.set({ 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, no-store' });
+        res.send(jpeg);
+    } catch (error: any) {
+        const gone = error?.status === 404 || /\(código 100\)/.test(String(error?.message));
+        res.status(gone ? 410 : 502).json({
+            error: gone ? 'WhatsApp ya no tiene esta foto: las borra pasado un tiempo.' : 'No se pudo traer la foto de WhatsApp. Intenta de nuevo.',
+        });
+    }
 });
 
 /** POST /admin-api/sessions/:sessionId/resume — el bot vuelve a atender el chat. */

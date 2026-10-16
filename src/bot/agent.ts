@@ -250,7 +250,12 @@ async function getOrCreateSession(
     return [{ role: 'system', content: systemPrompt }, ...mem];
 }
 
-export type CustomerPhoto = { mimetype: string; data: string };
+/** `mediaId`: el identificador de la foto en WhatsApp. Se guarda SOLO eso (nunca la imagen) para que el
+ *  admin de la tienda pueda verla mientras WhatsApp la conserve (src/routes/admin-api.ts). */
+export type CustomerPhoto = { mimetype: string; data: string; mediaId?: string };
+
+/** Campo del mensaje del cliente con el identificador de su foto en WhatsApp. La IA nunca lo recibe. */
+export const PHOTO_MEDIA_ID_FIELD = 'photoMediaId';
 
 /** Texto que queda en el historial en lugar de la foto del cliente (la imagen no se guarda). */
 export function photoPlaceholder(caption: string): string {
@@ -267,8 +272,10 @@ export function messagesForModel(
     photoMessage: OpenAI.Chat.ChatCompletionMessageParam,
     photo?: CustomerPhoto,
 ): OpenAI.Chat.ChatCompletionMessageParam[] {
-    return messages.map(msg => {
-        if (photo && msg === photoMessage) {
+    return messages.map(original => {
+        // El identificador de la foto es para el admin de la tienda: la IA no lo recibe.
+        const msg = PHOTO_MEDIA_ID_FIELD in (original as any) ? withoutPhotoMediaId(original) : original;
+        if (photo && original === photoMessage) {
             return {
                 role: 'user',
                 content: [
@@ -286,6 +293,11 @@ export function messagesForModel(
         }
         return msg;
     });
+}
+
+function withoutPhotoMediaId(msg: OpenAI.Chat.ChatCompletionMessageParam): OpenAI.Chat.ChatCompletionMessageParam {
+    const { [PHOTO_MEDIA_ID_FIELD]: _mediaId, ...rest } = msg as any;
+    return rest;
 }
 
 /**
@@ -554,7 +566,8 @@ async function processUserMessage(
     const userMessage: OpenAI.Chat.ChatCompletionUserMessageParam = {
         role: 'user',
         content: media ? photoPlaceholder(userText) : (userText || 'El usuario envió un archivo sin texto.'),
-    };
+        ...(media?.mediaId ? { [PHOTO_MEDIA_ID_FIELD]: media.mediaId } : {}),
+    } as OpenAI.Chat.ChatCompletionUserMessageParam;
     history.push(userMessage);
 
     await saveMemory(sessionId, storeId, senderPhone, history);
