@@ -40,6 +40,8 @@ tienda (`public.*`): el catálogo lo toma de la API pública de la tienda.
   reinicios. Si falta, el bot sigue contando en memoria.
 - `007_nombre_perfil.sql`: columna `profile_name` en `bot.sessions`, el nombre de perfil de WhatsApp
   que el panel muestra en la lista de chats. Correr ANTES de desplegar (saveMemory la escribe).
+- `008_aviso_cotizacion.sql`: agrega el tipo de aviso `cotizacion` (el bot pide a un empleado que
+  cotice por el chat). Correr ANTES de desplegar (request_quote lo escribe).
 
 ## Comprobar permisos
 

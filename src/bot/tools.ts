@@ -55,6 +55,20 @@ function queueImage(sessionId: string, base64DataUri: string, caption?: string) 
 }
 
 /** Celular (3xx) o fijo (60x) colombiano de 10 dígitos, con o sin 57 delante; null si no es válido. */
+/**
+ * Una cotización por chat cada 30 minutos: si la IA vuelve a llamar request_quote mientras el
+ * cliente sigue dando detalles, la campana no suena de nuevo (el empleado ya ve el chat).
+ */
+const QUOTE_COOLDOWN_MS = 30 * 60 * 1000;
+const lastQuoteAt = new Map<string, number>();
+
+export function isRepeatedQuote(sessionKey: string, now = Date.now()): boolean {
+    for (const [key, at] of lastQuoteAt) if (now - at >= QUOTE_COOLDOWN_MS) lastQuoteAt.delete(key);
+    if (lastQuoteAt.has(sessionKey)) return true;
+    lastQuoteAt.set(sessionKey, now);
+    return false;
+}
+
 export function normalizeColombianMobile(phone: string): string | null {
     const digits = (phone || '').replace(/\D/g, '');
     const local = digits.startsWith('57') && digits.length === 12 ? digits.slice(2) : digits;
@@ -255,6 +269,22 @@ export const botTools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                     nombre: { type: 'string', description: 'Nombre del cliente si ya lo dio.' },
                 },
                 required: ['via']
+            }
+        }
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'request_quote',
+            description: 'Pide a un empleado de la joyería que haga la cotización y se la envíe al cliente por este chat. Úsala cuando el cliente quiera saber el precio de una pieza que hay que fabricar, diseñar a medida, que está bajo pedido o que no tiene precio, y ya sepas qué pieza es (por su descripción o su foto). No la uses para piezas disponibles con precio: esas se compran con el enlace.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    pieza: { type: 'string', description: 'Qué hay que cotizar, en pocas palabras, ej.: "anillo de compromiso en oro con circón", "pulsera dorada con piedras cuadradas, según foto".' },
+                    detalles: { type: 'string', description: 'Lo que el cliente ya dijo de material, medida, piedra, presupuesto o fecha. Vacío si no dijo nada.' },
+                    nombre: { type: 'string', description: 'Nombre del cliente si ya lo dio.' },
+                },
+                required: ['pieza']
             }
         }
     },
@@ -584,6 +614,28 @@ export async function executeTool(
                             ? `Ya avisé al equipo. Dile al cliente en una frase corta que un asesor lo llamará lo antes posible al ${callable}, ${APPOINTMENT_HOURS}.`
                             : 'Ya avisé al equipo. Pídele al cliente un número de celular de 10 dígitos para que el asesor lo llame.')
                         : 'Ya avisé al equipo. Dile al cliente en una frase corta que un asesor le escribirá por aquí lo antes posible.',
+                });
+            }
+
+            // ── Cotización: la hace un empleado y responde por este chat ──
+            case 'request_quote': {
+                const { pieza, detalles, nombre } = args as { pieza?: string; detalles?: string; nombre?: string };
+                const what = (pieza || '').trim() || 'Pieza sin describir';
+                const extra = (detalles || '').trim();
+                const key = sessionId || `${storeId}_${senderPhone}`;
+                if (!isRepeatedQuote(key)) {
+                    await createNotification({
+                        kind: 'cotizacion',
+                        storeId,
+                        sessionId,
+                        phone: normalizeColombianMobile(senderPhone) || senderPhone,
+                        clientName: (nombre || '').trim(),
+                        detail: extra ? `${what} — ${extra}` : what,
+                    });
+                }
+                return JSON.stringify({
+                    success: true,
+                    instructions_for_ai: `Ya avisé al equipo. Dile al cliente en una frase corta que un asesor le enviará la cotización por este chat, ${APPOINTMENT_HOURS}. No le des precio ni tiempo de entrega.`,
                 });
             }
 

@@ -12,7 +12,7 @@ import { logger } from '../utils/logger';
 export type AppointmentStatus = 'scheduled' | 'cancelled' | 'completed' | 'no_show';
 export const APPOINTMENT_STATUSES: AppointmentStatus[] = ['scheduled', 'cancelled', 'completed', 'no_show'];
 
-export type NotificationKind = 'cita_nueva' | 'llamada_agendada' | 'cita_reprogramada' | 'llamar_ya' | 'pide_asesor';
+export type NotificationKind = 'cita_nueva' | 'llamada_agendada' | 'cita_reprogramada' | 'llamar_ya' | 'pide_asesor' | 'cotizacion';
 
 export type Appointment = {
     id: string;
