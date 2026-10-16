@@ -100,11 +100,15 @@ adminApiRouter.post('/sessions/:sessionId/reply', async (req: Request, res: Resp
     }
 
     // El destino es siempre el cliente de ese chat, nunca un número que mande la petición.
+    // Se pausa ANTES de enviar para que la IA no conteste a la vez; si WhatsApp rechaza el
+    // mensaje, el chat vuelve a como estaba: nadie le escribió al cliente.
+    const wasPaused = Boolean(session.isPaused);
     await pauseChat(sessionId);
     try {
         await sendWhatsAppMessage(session.storeId, session.senderPhone, message);
     } catch (error: any) {
-        return res.status(502).json({ error: readableError(error), botPaused: true });
+        if (!wasPaused) await resumeChat(sessionId);
+        return res.status(502).json({ error: readableError(error), botPaused: wasPaused });
     }
 
     try {
