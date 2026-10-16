@@ -41,6 +41,10 @@ function bootstrap() {
 
     const app = express();
 
+    // ngrok corre en el mismo servidor y reenvía con X-Forwarded-For: confiar en ese único salto
+    // para que el límite de peticiones cuente por IP real y no a todos como si fueran ngrok.
+    app.set('trust proxy', 1);
+
     // 1. Seguridad Básica (Headers)
     app.use(helmet({
         contentSecurityPolicy: false,
