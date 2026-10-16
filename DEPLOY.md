@@ -74,6 +74,13 @@ git pull origin master
 5. **Google Calendar:** copiar al VPS el JSON de la cuenta de servicio y poner su ruta en
    `GOOGLE_SERVICE_ACCOUNT_PATH` (por ejemplo `google-service-account.json` en la raíz del proyecto).
    Sin este archivo las citas no se crean en el calendario.
+6. **Chats en el admin de la tienda (opcional):** para que el dueño lea y responda los chats en
+   **Mostrador → WhatsApp**, generar una llave larga
+   (`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`) y ponerla en
+   `BOT_ADMIN_API_TOKEN` aquí **y** en las variables de la tienda (Vercel), junto con
+   `BOT_URL=https://TU-DOMINIO` (la misma dirección pública del webhook, sin `/webhook/whatsapp`).
+7. **Consulta de reparaciones:** antes de desplegar, correr `supabase/004_consulta_taller.sql` en
+   el SQL Editor de Supabase (ver `supabase/README.md`).
 
 > El `.env` y el JSON de Google **nunca** se suben a GitHub (ya están en `.gitignore`).
 > Pasarlos al VPS por escritorio remoto o por un canal privado.
