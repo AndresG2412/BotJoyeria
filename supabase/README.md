@@ -7,7 +7,8 @@ tienda (`public.*`): el catálogo lo toma de la API pública de la tienda.
 | Objeto | Para qué |
 |---|---|
 | `bot.sessions` | Historial de cada conversación (lo que se le pasa a la IA), pausa del asesor |
-| `bot.appointments` | Citas presenciales agendadas (también quedan en Google Calendar) |
+| `bot.appointments` | El calendario de citas (presenciales y llamadas); lo ve la tienda en Mostrador → Citas |
+| `bot.notifications` | Avisos para la joyería (la campana del admin de la tienda) |
 | rol `bot_joyeria` | Único usuario del bot: solo `select/insert/update/delete` en esas dos tablas |
 
 ## Instalación (una sola vez)
@@ -32,6 +33,8 @@ tienda (`public.*`): el catálogo lo toma de la API pública de la tienda.
   las reparaciones (Mostrador → Taller). Es de solo lectura y verifica dentro de la base: el bot NO
   recibe permisos sobre `public.ordenes_taller` ni `public.clientes`, solo puede ejecutar la función.
   Correr ANTES de desplegar el código que la usa (sin ella el bot responde que no puede consultar).
+- `005_calendario_y_avisos.sql`: calendario propio (estado «no vino», notas, origen, un solo turno por
+  horario) y la tabla `bot.notifications`. Reemplaza a Google Calendar. Correr ANTES de desplegar.
 
 ## Comprobar permisos
 

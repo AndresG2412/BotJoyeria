@@ -60,7 +60,6 @@ export const config = {
     CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME || '',
     CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY || '',
     CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET || '',
-    RESEND_API_KEY: process.env.RESEND_API_KEY || '',
     // Tienda pública: el catálogo se lee de su API (solo lo publicado, sin credenciales)
     SITE_URL: process.env.SITE_URL || 'https://www.mr18kts.online',
     // Llave que usa el servidor de la tienda para ver y responder chats desde su admin
@@ -74,8 +73,6 @@ export const config = {
     BOT_SESSION_RETENTION_DAYS: intFromEnv('BOT_SESSION_RETENTION_DAYS', 90),
     // Coexistencia: horas que el bot se aparta de un chat cuando la joyería contesta desde el celular.
     HUMAN_TAKEOVER_HOURS: intFromEnv('HUMAN_TAKEOVER_HOURS', 4),
-    // Ruta al JSON de cuenta de servicio de Google (solo para Google Calendar)
-    GOOGLE_SERVICE_ACCOUNT_PATH: process.env.GOOGLE_SERVICE_ACCOUNT_PATH || '',
     // Agrupación de mensajes consecutivos del mismo cliente (WhatsApp)
     // Con la Cloud API oficial no hay riesgo de bloqueo por responder rápido: solo se espera
     // lo justo para juntar mensajes seguidos («hola» + «busco un anillo»).

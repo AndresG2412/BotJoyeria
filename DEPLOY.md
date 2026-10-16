@@ -61,7 +61,7 @@ git pull origin master
 ## 3. Configurar el `.env`
 
 1. Copiar la plantilla: `copy .env.example .env`
-2. Completar **todas** las credenciales reales (Anthropic, Supabase, Meta, Resend,
+2. Completar **todas** las credenciales reales (IA, Supabase, Meta,
    `DASHBOARD_USER`, `DASHBOARD_PASSWORD`).
 3. Cambiar obligatoriamente en producción:
    - `DASHBOARD_PASSWORD` → una contraseña fuerte (no `admin123`).
@@ -71,9 +71,9 @@ git pull origin master
    (Business Settings → Usuarios del sistema → Generar token, con los permisos
    `whatsapp_business_messaging` y `whatsapp_business_management`). Los tokens temporales del panel
    de desarrolladores caducan en 24 horas y el bot dejaría de responder.
-5. **Google Calendar:** copiar al VPS el JSON de la cuenta de servicio y poner su ruta en
-   `GOOGLE_SERVICE_ACCOUNT_PATH` (por ejemplo `google-service-account.json` en la raíz del proyecto).
-   Sin este archivo las citas no se crean en el calendario.
+5. **Citas:** ya no se usa Google Calendar. Las citas viven en la base (`bot.appointments`) y se
+   ven en el admin de la tienda (Mostrador → Citas). Antes de desplegar, correr
+   `supabase/005_calendario_y_avisos.sql` en Supabase.
 6. **Chats en el admin de la tienda (opcional):** para que el dueño lea y responda los chats en
    **Mostrador → WhatsApp**, generar una llave larga
    (`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`) y ponerla en
